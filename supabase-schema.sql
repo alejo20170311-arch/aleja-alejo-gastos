@@ -20,26 +20,26 @@ drop policy if exists "allow shared house delete" on public.house_movements;
 create policy "allow shared house read"
   on public.house_movements
   for select
-  to anon
+  to authenticated
   using (household_id = 'aleja-alejo');
 
 create policy "allow shared house insert"
   on public.house_movements
   for insert
-  to anon
+  to authenticated
   with check (household_id = 'aleja-alejo');
 
 create policy "allow shared house update"
   on public.house_movements
   for update
-  to anon
+  to authenticated
   using (household_id = 'aleja-alejo')
   with check (household_id = 'aleja-alejo');
 
 create policy "allow shared house delete"
   on public.house_movements
   for delete
-  to anon
+  to authenticated
   using (household_id = 'aleja-alejo');
 
 create or replace function public.set_updated_at()

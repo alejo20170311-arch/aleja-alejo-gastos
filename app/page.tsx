@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import type { User } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "./supabaseClient";
 
 type Person = "Alejo" | "Aleja";
@@ -195,9 +196,41 @@ export default function Home() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>("home");
+  const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
+  const [user, setUser] = useState<User | null>(null);
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+  const [passwordPanelOpen, setPasswordPanelOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordMessage, setPasswordMessage] = useState("");
 
   useEffect(() => {
+    if (!supabase) return;
+
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user ?? null);
+      setAuthReady(true);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setAuthReady(true);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+
     async function loadExpenses() {
+      if (isSupabaseConfigured && !user) {
+        setExpenses([]);
+        setHasLoaded(true);
+        return;
+      }
+
       const remoteExpenses = isSupabaseConfigured
         ? await loadRemoteExpenses()
         : null;
@@ -222,7 +255,7 @@ export default function Home() {
     }
 
     void loadExpenses();
-  }, []);
+  }, [authReady, user]);
 
   useEffect(() => {
     if (hasLoaded) saveLocalExpenses(expenses);
@@ -446,15 +479,61 @@ export default function Home() {
     URL.revokeObjectURL(url);
   }
 
-  function clearAll() {
+  async function signOut() {
+    await supabase?.auth.signOut();
+    setExpenses([]);
+    setSessionMenuOpen(false);
+    setPasswordPanelOpen(false);
+  }
+
+  async function changePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPasswordMessage("");
+
+    if (!supabase || newPassword.length < 6) {
+      setPasswordMessage("La clave debe tener minimo 6 caracteres.");
+      return;
+    }
+
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setPasswordMessage(error.message);
+      return;
+    }
+
+    setNewPassword("");
+    setPasswordMessage("Clave actualizada.");
+  }
+
+  async function clearAll() {
     if (expenses.length === 0) return;
     if (window.confirm("Borrar todos los gastos registrados?")) {
+      if (supabase) {
+        await Promise.all(expenses.map((expense) => deleteRemoteExpense(expense.id)));
+      }
       setExpenses([]);
     }
   }
 
   const maxCategoryAmount = totals.categoryRows[0]?.amount ?? 0;
   const hasBalance = totals.settle.amount > 0.5;
+
+  if (isSupabaseConfigured && !authReady) {
+    return (
+      <main className="app-shell min-h-screen text-[#20211d]">
+        <div className="auth-shell">
+          <section className="auth-card">
+            <h1>Aleja & Alejo</h1>
+            <p>Cargando sesion...</p>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  if (isSupabaseConfigured && !user) {
+    return <AuthScreen />;
+  }
 
   return (
     <main className="app-shell min-h-screen text-[#20211d]">
@@ -467,9 +546,50 @@ export default function Home() {
               </p>
               <h1 className="mt-1 text-3xl font-bold">Aleja & Alejo</h1>
             </div>
-            <button className="small-action" type="button" onClick={openNewMovement}>
-              Registrar
-            </button>
+            <div className="session-area">
+              <button className="small-action" type="button" onClick={openNewMovement}>
+                Registrar
+              </button>
+              <button
+                className="avatar-button"
+                type="button"
+                onClick={() => setSessionMenuOpen((current) => !current)}
+                aria-label="Abrir sesion"
+              >
+                {user?.email?.slice(0, 1).toUpperCase() ?? "U"}
+              </button>
+              {sessionMenuOpen ? (
+                <div className="session-menu">
+                  <p>{user?.email}</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPasswordPanelOpen((current) => !current);
+                      setPasswordMessage("");
+                    }}
+                  >
+                    Cambiar contrasena
+                  </button>
+                  {passwordPanelOpen ? (
+                    <form className="password-form" onSubmit={changePassword}>
+                      <input
+                        className="field"
+                        minLength={6}
+                        placeholder="Nueva clave"
+                        type="password"
+                        value={newPassword}
+                        onChange={(event) => setNewPassword(event.target.value)}
+                      />
+                      <button type="submit">Guardar clave</button>
+                      {passwordMessage ? <span>{passwordMessage}</span> : null}
+                    </form>
+                  ) : null}
+                  <button type="button" onClick={signOut}>
+                    Cerrar sesion
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
       </section>
@@ -718,6 +838,103 @@ export default function Home() {
           onUpdate={updateDraft}
         />
       ) : null}
+    </main>
+  );
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  async function submitAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    setIsSubmitting(true);
+
+    if (!supabase) {
+      setMessage("Supabase no esta configurado.");
+      setIsSubmitting(false);
+      return;
+    }
+
+    const result =
+      mode === "signin"
+        ? await supabase.auth.signInWithPassword({ email, password })
+        : await supabase.auth.signUp({ email, password });
+
+    setIsSubmitting(false);
+
+    if (result.error) {
+      setMessage(result.error.message);
+      return;
+    }
+
+    if (mode === "signup" && !result.data.session) {
+      setMessage("Usuario creado. Revisa tu correo si Supabase pide confirmar.");
+      return;
+    }
+
+    setMessage("Listo.");
+  }
+
+  return (
+    <main className="app-shell min-h-screen text-[#20211d]">
+      <div className="auth-shell">
+        <section className="auth-card">
+          <p>Casa compartida</p>
+          <h1>Aleja & Alejo</h1>
+          <span>Ingresa con correo y clave para ver los gastos.</span>
+
+          <form className="auth-form" onSubmit={submitAuth}>
+            <label>
+              Correo
+              <input
+                className="field"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+              />
+            </label>
+            <label>
+              Clave
+              <input
+                className="field"
+                type="password"
+                minLength={6}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                required
+              />
+            </label>
+            <button type="submit" disabled={isSubmitting}>
+              {isSubmitting
+                ? "Un momento..."
+                : mode === "signin"
+                  ? "Entrar"
+                  : "Crear cuenta"}
+            </button>
+          </form>
+
+          {message ? <div className="auth-message">{message}</div> : null}
+
+          <button
+            className="auth-switch"
+            type="button"
+            onClick={() => {
+              setMode((current) => (current === "signin" ? "signup" : "signin"));
+              setMessage("");
+            }}
+          >
+            {mode === "signin"
+              ? "Crear cuenta nueva"
+              : "Ya tengo cuenta, entrar"}
+          </button>
+        </section>
+      </div>
     </main>
   );
 }
