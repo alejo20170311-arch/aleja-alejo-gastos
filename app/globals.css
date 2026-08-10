@@ -1,0 +1,338 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f7f4ee;
+  --foreground: #20211d;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.app-shell {
+  position: relative;
+  isolation: isolate;
+  background-image:
+    linear-gradient(
+      180deg,
+      rgba(247, 244, 238, 0.34),
+      rgba(247, 244, 238, 0.42) 34%,
+      rgba(247, 244, 238, 0.62)
+    ),
+    url("/casa-fondo.png");
+  background-attachment: fixed;
+  background-position: center;
+  background-size: cover;
+}
+
+.app-hero {
+  background: rgba(255, 250, 241, 0.48);
+  backdrop-filter: blur(4px);
+}
+
+.app-shell section[class*="bg-white"],
+.app-shell div[class*="bg-white"] {
+  background-color: rgba(255, 255, 255, 0.84);
+  backdrop-filter: blur(8px);
+}
+
+.app-shell .bg-\[\#273c35\] {
+  background-color: rgba(39, 60, 53, 0.9);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.field {
+  min-height: 44px;
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid #c8bdac;
+  background: #fffaf1;
+  padding: 0.65rem 0.75rem;
+  color: #20211d;
+  outline: none;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
+}
+
+.field:focus {
+  border-color: #d56b3d;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(213, 107, 61, 0.18);
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.segmented.split {
+  grid-template-columns: 1fr;
+}
+
+.segmented button {
+  min-height: 44px;
+  border-radius: 6px;
+  border: 1px solid #c8bdac;
+  background: #fffaf1;
+  color: #4f463d;
+  font-weight: 700;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.segmented button.active {
+  border-color: #273c35;
+  background: #273c35;
+  color: #ffffff;
+}
+
+.expense-card {
+  display: grid;
+  gap: 1rem;
+  border-radius: 8px;
+  border: 1px solid #ded6c8;
+  background: rgba(255, 253, 248, 0.86);
+  backdrop-filter: blur(8px);
+  padding: 1rem;
+}
+
+.expense-card span {
+  border-radius: 999px;
+  background: #efe6d8;
+  padding: 0.2rem 0.55rem;
+  color: #665847;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.expense-card button {
+  min-height: 38px;
+  border-radius: 6px;
+  border: 1px solid #d8cabb;
+  background: #ffffff;
+  padding: 0 0.75rem;
+  color: #7b2f27;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.balance-line {
+  border-radius: 8px;
+  border: 1px solid #ded6c8;
+  background: #fffaf1;
+  padding: 1rem;
+}
+
+.balance-line p {
+  color: #736352;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.balance-line strong {
+  display: block;
+  margin-top: 0.35rem;
+  color: #20211d;
+  font-size: 1.25rem;
+  line-height: 1.25;
+}
+
+.balance-line span {
+  display: block;
+  margin-top: 0.35rem;
+  color: #615b52;
+  font-size: 0.875rem;
+}
+
+.balance-line.final {
+  border-color: #273c35;
+  background: #273c35;
+}
+
+.balance-line.final p,
+.balance-line.final strong,
+.balance-line.final span {
+  color: #ffffff;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: end center;
+  overflow: auto;
+  background: rgba(32, 33, 29, 0.42);
+  padding: 1rem;
+}
+
+.expense-modal {
+  max-height: calc(100vh - 2rem);
+  width: min(100%, 680px);
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(222, 214, 200, 0.9);
+  background: rgba(255, 253, 248, 0.96);
+  box-shadow: 0 24px 80px rgba(32, 33, 29, 0.28);
+  padding: 1rem;
+}
+
+.modal-close {
+  min-height: 38px;
+  border-radius: 6px;
+  border: 1px solid #c8bdac;
+  background: #fffaf1;
+  padding: 0 0.75rem;
+  color: #4f463d;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.receipt-box {
+  display: grid;
+  gap: 0.75rem;
+  border-radius: 8px;
+  border: 1px dashed #c8bdac;
+  background: #fffaf1;
+  padding: 1rem;
+}
+
+.receipt-button {
+  display: inline-flex;
+  min-height: 44px;
+  width: fit-content;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: #d56b3d;
+  padding: 0 1rem;
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.receipt-preview {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.receipt-preview img {
+  aspect-ratio: 1;
+  width: 72px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.receipt-preview p {
+  color: #4f463d;
+  font-size: 0.875rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.receipt-preview button,
+.receipt-link {
+  margin-top: 0.35rem;
+  color: #7b2f27;
+  font-size: 0.875rem;
+  font-weight: 800;
+  text-decoration: underline;
+}
+
+.receipt-link {
+  display: inline-block;
+}
+
+.loan-note {
+  border-radius: 8px;
+  border: 1px solid #d8cabb;
+  background: #fffaf1;
+  color: #4f463d;
+  font-size: 0.95rem;
+  font-weight: 700;
+  padding: 0.85rem;
+}
+
+.pay-button {
+  margin-top: 0.85rem;
+  min-height: 40px;
+  width: 100%;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #273c35;
+  font-size: 0.95rem;
+  font-weight: 900;
+}
+
+.export-button {
+  min-height: 44px;
+  align-self: end;
+  border-radius: 6px;
+  background: #d56b3d;
+  color: #ffffff;
+  font-size: 0.95rem;
+  font-weight: 900;
+  padding: 0 1rem;
+}
+
+@media (min-width: 640px) {
+  .segmented.split {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .modal-backdrop {
+    place-items: center;
+  }
+
+  .expense-modal {
+    padding: 1.25rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .expense-card {
+    grid-template-columns: 1fr auto;
+    align-items: center;
+  }
+}
