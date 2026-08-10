@@ -530,6 +530,69 @@ button {
   display: inline-block;
 }
 
+.receipt-modal {
+  max-height: calc(100vh - 2rem);
+  width: min(100%, 760px);
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(222, 214, 200, 0.9);
+  background: rgba(255, 253, 248, 0.98);
+  box-shadow: 0 24px 80px rgba(32, 33, 29, 0.28);
+  padding: 1rem;
+}
+
+.receipt-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.receipt-modal-header h2 {
+  color: #20211d;
+  font-size: 1.35rem;
+  font-weight: 900;
+}
+
+.receipt-modal-header p {
+  color: #615b52;
+  font-size: 0.875rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.receipt-modal-header button {
+  min-height: 38px;
+  border-radius: 6px;
+  border: 1px solid #c8bdac;
+  background: #fffaf1;
+  padding: 0 0.75rem;
+  color: #4f463d;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.receipt-modal img {
+  width: 100%;
+  max-height: 70vh;
+  border-radius: 8px;
+  background: #20211d;
+  object-fit: contain;
+}
+
+.receipt-modal > a {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  margin-top: 1rem;
+  border-radius: 6px;
+  background: #d56b3d;
+  color: #ffffff;
+  font-weight: 900;
+  padding: 0 1rem;
+}
+
 .loan-note {
   border-radius: 8px;
   border: 1px solid #d8cabb;

@@ -202,6 +202,7 @@ export default function Home() {
   const [passwordPanelOpen, setPasswordPanelOpen] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [passwordMessage, setPasswordMessage] = useState("");
+  const [viewingReceipt, setViewingReceipt] = useState<Receipt | null>(null);
 
   useEffect(() => {
     if (!supabase) return;
@@ -645,6 +646,7 @@ export default function Home() {
                       key={expense.id}
                       onEdit={editExpense}
                       onRemove={removeExpense}
+                      onViewReceipt={setViewingReceipt}
                     />
                   ))
                 )}
@@ -802,6 +804,7 @@ export default function Home() {
                     key={expense.id}
                     onEdit={editExpense}
                     onRemove={removeExpense}
+                    onViewReceipt={setViewingReceipt}
                   />
                 ))
               )}
@@ -836,6 +839,13 @@ export default function Home() {
           onRemoveReceipt={() => updateDraft("receipt", undefined)}
           onSubmit={addExpense}
           onUpdate={updateDraft}
+        />
+      ) : null}
+
+      {viewingReceipt ? (
+        <ReceiptViewer
+          receipt={viewingReceipt}
+          onClose={() => setViewingReceipt(null)}
         />
       ) : null}
     </main>
@@ -1132,10 +1142,12 @@ function ExpenseRow({
   expense,
   onEdit,
   onRemove,
+  onViewReceipt,
 }: {
   expense: Expense;
   onEdit: (expense: Expense) => void;
   onRemove: (id: string) => void;
+  onViewReceipt: (receipt: Receipt) => void;
 }) {
   const debt = debtCreatedByExpense(expense);
   const isLoan = expense.type === "loan";
@@ -1173,13 +1185,13 @@ function ExpenseRow({
           <p className="mt-2 text-sm text-[#615b52]">{expense.note}</p>
         ) : null}
         {expense.receipt ? (
-          <a
+          <button
             className="receipt-link"
-            href={expense.receipt.dataUrl}
-            target="_blank"
+            type="button"
+            onClick={() => onViewReceipt(expense.receipt!)}
           >
             Ver factura
-          </a>
+          </button>
         ) : null}
       </div>
       <div className="flex items-center justify-between gap-3 md:flex-col md:items-end">
@@ -1194,6 +1206,39 @@ function ExpenseRow({
         </div>
       </div>
     </article>
+  );
+}
+
+function ReceiptViewer({
+  receipt,
+  onClose,
+}: {
+  receipt: Receipt;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section
+        aria-label="Factura adjunta"
+        aria-modal="true"
+        className="receipt-modal"
+        role="dialog"
+      >
+        <div className="receipt-modal-header">
+          <div>
+            <h2>Factura</h2>
+            <p>{receipt.name}</p>
+          </div>
+          <button type="button" onClick={onClose}>
+            Cerrar
+          </button>
+        </div>
+        <img alt="Factura adjunta" src={receipt.dataUrl} />
+        <a download={receipt.name || "factura.jpg"} href={receipt.dataUrl}>
+          Descargar factura
+        </a>
+      </section>
+    </div>
   );
 }
 
