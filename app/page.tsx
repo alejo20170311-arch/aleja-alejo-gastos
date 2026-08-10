@@ -843,7 +843,6 @@ export default function Home() {
 }
 
 function AuthScreen() {
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
@@ -860,20 +859,12 @@ function AuthScreen() {
       return;
     }
 
-    const result =
-      mode === "signin"
-        ? await supabase.auth.signInWithPassword({ email, password })
-        : await supabase.auth.signUp({ email, password });
+    const result = await supabase.auth.signInWithPassword({ email, password });
 
     setIsSubmitting(false);
 
     if (result.error) {
       setMessage(result.error.message);
-      return;
-    }
-
-    if (mode === "signup" && !result.data.session) {
-      setMessage("Usuario creado. Revisa tu correo si Supabase pide confirmar.");
       return;
     }
 
@@ -886,7 +877,10 @@ function AuthScreen() {
         <section className="auth-card">
           <p>Casa compartida</p>
           <h1>Aleja & Alejo</h1>
-          <span>Ingresa con correo y clave para ver los gastos.</span>
+          <span>
+            Ingresa con el usuario creado en Supabase. Las cuentas nuevas solo
+            las crea el administrador.
+          </span>
 
           <form className="auth-form" onSubmit={submitAuth}>
             <label>
@@ -911,28 +905,11 @@ function AuthScreen() {
               />
             </label>
             <button type="submit" disabled={isSubmitting}>
-              {isSubmitting
-                ? "Un momento..."
-                : mode === "signin"
-                  ? "Entrar"
-                  : "Crear cuenta"}
+              {isSubmitting ? "Un momento..." : "Entrar"}
             </button>
           </form>
 
           {message ? <div className="auth-message">{message}</div> : null}
-
-          <button
-            className="auth-switch"
-            type="button"
-            onClick={() => {
-              setMode((current) => (current === "signin" ? "signup" : "signin"));
-              setMessage("");
-            }}
-          >
-            {mode === "signin"
-              ? "Crear cuenta nueva"
-              : "Ya tengo cuenta, entrar"}
-          </button>
         </section>
       </div>
     </main>
