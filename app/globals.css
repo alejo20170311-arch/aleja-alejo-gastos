@@ -58,6 +58,114 @@ body {
   background-color: rgba(39, 60, 53, 0.9);
 }
 
+.tab-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.hero-balance {
+  border-radius: 16px;
+  border: 1px solid rgba(222, 214, 200, 0.9);
+  background: rgba(39, 60, 53, 0.92);
+  color: #ffffff;
+  padding: 1.25rem;
+  box-shadow: 0 18px 55px rgba(32, 33, 29, 0.22);
+}
+
+.hero-balance p {
+  color: #d7e3d9;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.hero-balance strong {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: clamp(2rem, 8vw, 3.5rem);
+  line-height: 1;
+}
+
+.hero-balance span {
+  display: block;
+  margin-top: 0.6rem;
+  color: #d7e3d9;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.hero-balance button {
+  margin-top: 1rem;
+  min-height: 44px;
+  width: 100%;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #273c35;
+  font-weight: 900;
+}
+
+.quick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.small-action {
+  min-height: 42px;
+  border-radius: 8px;
+  border: 1px solid #c8bdac;
+  background: rgba(255, 250, 241, 0.9);
+  color: #273c35;
+  padding: 0 0.9rem;
+  font-size: 0.9rem;
+  font-weight: 900;
+}
+
+.fab {
+  position: fixed;
+  right: 1rem;
+  bottom: 5.6rem;
+  z-index: 45;
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  background: #d56b3d;
+  color: #ffffff;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 14px 35px rgba(32, 33, 29, 0.28);
+}
+
+.bottom-tabs {
+  position: fixed;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  left: 0.75rem;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.35rem;
+  border: 1px solid rgba(222, 214, 200, 0.9);
+  border-radius: 16px;
+  background: rgba(255, 253, 248, 0.94);
+  padding: 0.4rem;
+  box-shadow: 0 18px 45px rgba(32, 33, 29, 0.2);
+  backdrop-filter: blur(12px);
+}
+
+.bottom-tabs button {
+  min-height: 44px;
+  border-radius: 12px;
+  color: #615b52;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.bottom-tabs button.active {
+  background: #273c35;
+  color: #ffffff;
+}
+
 button,
 input,
 select,
@@ -334,5 +442,16 @@ button {
   .expense-card {
     grid-template-columns: 1fr auto;
     align-items: center;
+  }
+
+  .quick-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .bottom-tabs {
+    right: 50%;
+    left: auto;
+    width: min(720px, calc(100% - 2rem));
+    transform: translateX(50%);
   }
 }

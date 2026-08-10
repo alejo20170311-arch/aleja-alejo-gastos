@@ -5,6 +5,7 @@ import { isSupabaseConfigured, supabase } from "./supabaseClient";
 
 type Person = "Alejo" | "Aleja";
 type MovementType = "expense" | "loan" | "payment";
+type ActiveTab = "home" | "accounts" | "analysis" | "movements";
 type SplitMode = "shared" | "alejo" | "aleja";
 type Receipt = { name: string; dataUrl: string };
 type Expense = {
@@ -27,6 +28,12 @@ type ExpenseDraft = Omit<Expense, "id" | "amount" | "receipt"> & {
 const STORAGE_KEY = "casa-aleja-alejo-expenses";
 const HOUSEHOLD_ID = "aleja-alejo";
 const people: Person[] = ["Alejo", "Aleja"];
+const tabs: { id: ActiveTab; label: string }[] = [
+  { id: "home", label: "Inicio" },
+  { id: "accounts", label: "Cuentas" },
+  { id: "analysis", label: "Analisis" },
+  { id: "movements", label: "Movimientos" },
+];
 const categories = [
   "Arriendo",
   "Comida",
@@ -187,6 +194,7 @@ export default function Home() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
+  const [activeTab, setActiveTab] = useState<ActiveTab>("home");
 
   useEffect(() => {
     async function loadExpenses() {
@@ -451,216 +459,220 @@ export default function Home() {
   return (
     <main className="app-shell min-h-screen text-[#20211d]">
       <section className="app-hero border-b border-white/40">
-        <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-5 sm:px-6">
+          <div className="flex items-center justify-between gap-4">
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#736352]">
                 Casa compartida
               </p>
-              <h1 className="mt-2 text-3xl font-bold sm:text-5xl">
-                Aleja & Alejo
-              </h1>
-              <p className="mt-2 max-w-2xl text-base text-[#615b52]">
-                Indicadores de gastos, facturas y cruce de cuentas por mitad.
-              </p>
+              <h1 className="mt-1 text-3xl font-bold">Aleja & Alejo</h1>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <button
-                className="h-11 rounded-md border border-[#c8bdac] px-4 text-sm font-semibold text-[#4f463d] transition hover:bg-[#efe6d8]"
-                type="button"
-                onClick={clearAll}
-              >
-                Limpiar datos
-              </button>
-              <button
-                className="h-11 rounded-md bg-[#273c35] px-4 text-sm font-bold text-white transition hover:bg-[#1c2d27]"
-                type="button"
-                onClick={openNewMovement}
-              >
-                Registrar movimiento
-              </button>
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <Metric label="Total registrado" value={currency.format(totals.total)} />
-            <Metric
-              label="Gastos compartidos"
-              value={currency.format(totals.sharedTotal)}
-            />
-            <Metric label="Prestamos" value={currency.format(totals.loanTotal)} />
-            <Metric
-              label="Categoria principal"
-              value={totals.topCategory?.category ?? "Sin datos"}
-            />
-            <Metric
-              label="Saldo final"
-              value={
-                hasBalance
-                  ? `${totals.settle.from} debe ${currency.format(totals.settle.amount)}`
-                  : "Estamos tablas"
-              }
-            />
+            <button className="small-action" type="button" onClick={openNewMovement}>
+              Registrar
+            </button>
           </div>
         </div>
       </section>
 
-      <div className="mx-auto grid w-full max-w-6xl gap-6 px-4 py-6 sm:px-6 lg:px-8">
-        <section className="grid gap-6">
-          <div className="grid gap-3 md:grid-cols-3">
-            {people.map((person) => (
-              <div
-                className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm"
-                key={person}
-              >
-                <p className="text-sm font-semibold text-[#736352]">{person}</p>
-                <p className="mt-2 text-2xl font-bold">
-                  {currency.format(totals.owed[person])}
-                </p>
-                <p className="mt-1 text-sm text-[#615b52]">
-                  Pagado: {currency.format(totals.paid[person])}
-                </p>
-              </div>
-            ))}
-            <div className="rounded-lg border border-[#ded6c8] bg-[#273c35] p-4 text-white shadow-sm">
-              <p className="text-sm font-semibold text-[#d7e3d9]">Ajuste</p>
-              <p className="mt-2 text-2xl font-bold">
+      <div className="mx-auto w-full max-w-3xl px-4 pb-28 pt-4 sm:px-6">
+        {activeTab === "home" ? (
+          <section className="tab-panel">
+            <div className="hero-balance">
+              <p>Saldo final</p>
+              <strong>
                 {hasBalance
                   ? currency.format(totals.settle.amount)
-                  : currency.format(0)}
-              </p>
-              <p className="mt-1 text-sm text-[#d7e3d9]">
+                  : "Estamos tablas"}
+              </strong>
+              <span>
                 {hasBalance
                   ? `${totals.settle.from} le paga a ${totals.settle.to}`
                   : "No hay deuda entre ustedes"}
-              </p>
+              </span>
               {hasBalance ? (
-                <button
-                  className="pay-button"
-                  type="button"
-                  onClick={registerSettlementPayment}
-                >
-                  Pagar
+                <button type="button" onClick={registerSettlementPayment}>
+                  Pagar y quedar a paces
                 </button>
               ) : null}
             </div>
-          </div>
-
-          <section className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm">
-            <h2 className="text-xl font-bold">Cruce de cuentas</h2>
-            <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_1.2fr]">
-              <div className="balance-line">
-                <p>Aleja le debe a Alejo</p>
-                <strong>{currency.format(totals.directDebts.Aleja)}</strong>
-              </div>
-              <div className="balance-line">
-                <p>Alejo le debe a Aleja</p>
-                <strong>{currency.format(totals.directDebts.Alejo)}</strong>
-              </div>
-              <div className="balance-line final">
-                <p>Despues de cruzar</p>
-                <strong>
-                  {hasBalance
-                    ? `${totals.settle.from} paga ${currency.format(totals.settle.amount)}`
-                    : "Nadie debe nada"}
-                </strong>
-                <span>
-                  {hasBalance
-                    ? `Ese valor va para ${totals.settle.to}.`
-                    : "Los pagos quedaron compensados."}
-                </span>
-              </div>
+            <div className="quick-grid">
+              <Metric label="Total" value={currency.format(totals.total)} />
+              <Metric label="Compartidos" value={currency.format(totals.sharedTotal)} />
+              <Metric label="Prestamos" value={currency.format(totals.loanTotal)} />
+              <Metric
+                label="Top categoria"
+                value={totals.topCategory?.category ?? "Sin datos"}
+              />
             </div>
+            <section className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-xl font-bold">Ultimos movimientos</h2>
+                <button
+                  className="text-sm font-semibold text-[#273c35]"
+                  type="button"
+                  onClick={() => setActiveTab("movements")}
+                >
+                  Ver todos
+                </button>
+              </div>
+              <div className="mt-4 grid gap-3">
+                {expenses.length === 0 ? (
+                  <EmptyState text="Registra el primer movimiento para empezar." />
+                ) : (
+                  expenses.slice(0, 3).map((expense) => (
+                    <ExpenseRow
+                      expense={expense}
+                      key={expense.id}
+                      onEdit={editExpense}
+                      onRemove={removeExpense}
+                    />
+                  ))
+                )}
+              </div>
+            </section>
           </section>
+        ) : null}
 
-          <section className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm">
-            <div>
+        {activeTab === "accounts" ? (
+          <section className="tab-panel">
+            <div className="grid gap-3 sm:grid-cols-2">
+              {people.map((person) => (
+                <div
+                  className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm"
+                  key={person}
+                >
+                  <p className="text-sm font-semibold text-[#736352]">{person}</p>
+                  <p className="mt-2 text-2xl font-bold">
+                    {currency.format(totals.owed[person])}
+                  </p>
+                  <p className="mt-1 text-sm text-[#615b52]">
+                    Pagado: {currency.format(totals.paid[person])}
+                  </p>
+                </div>
+              ))}
+            </div>
+            <section className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm">
+              <h2 className="text-xl font-bold">Cruce de cuentas</h2>
+              <div className="mt-4 grid gap-3">
+                <div className="balance-line">
+                  <p>Aleja le debe a Alejo</p>
+                  <strong>{currency.format(totals.directDebts.Aleja)}</strong>
+                </div>
+                <div className="balance-line">
+                  <p>Alejo le debe a Aleja</p>
+                  <strong>{currency.format(totals.directDebts.Alejo)}</strong>
+                </div>
+                <div className="balance-line final">
+                  <p>Despues de cruzar</p>
+                  <strong>
+                    {hasBalance
+                      ? `${totals.settle.from} paga ${currency.format(totals.settle.amount)}`
+                      : "Nadie debe nada"}
+                  </strong>
+                  <span>
+                    {hasBalance
+                      ? `Ese valor va para ${totals.settle.to}.`
+                      : "Los pagos quedaron compensados."}
+                  </span>
+                </div>
+              </div>
+            </section>
+          </section>
+        ) : null}
+
+        {activeTab === "analysis" ? (
+          <section className="tab-panel">
+            <section className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm">
               <h2 className="text-xl font-bold">En que gastamos mas</h2>
               <p className="text-sm text-[#615b52]">
                 Comparacion por categoria con los gastos registrados.
               </p>
-            </div>
-            <div className="mt-4 grid gap-3">
-              {totals.categoryRows.length === 0 ? (
-                <EmptyState text="Cuando registren gastos, aqui apareceran los indicadores." />
-              ) : (
-                totals.categoryRows.map((row) => (
-                  <div className="grid gap-2" key={row.category}>
-                    <div className="flex items-center justify-between gap-3 text-sm">
-                      <span className="font-semibold">{row.category}</span>
-                      <span>{currency.format(row.amount)}</span>
+              <div className="mt-4 grid gap-3">
+                {totals.categoryRows.length === 0 ? (
+                  <EmptyState text="Cuando registren gastos, aqui apareceran los indicadores." />
+                ) : (
+                  totals.categoryRows.map((row) => (
+                    <div className="grid gap-2" key={row.category}>
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="font-semibold">{row.category}</span>
+                        <span>{currency.format(row.amount)}</span>
+                      </div>
+                      <div className="h-3 overflow-hidden rounded-full bg-[#eee6da]">
+                        <div
+                          className="h-full rounded-full bg-[#d56b3d]"
+                          style={{
+                            width: `${Math.max(
+                              8,
+                              (row.amount / maxCategoryAmount) * 100,
+                            )}%`,
+                          }}
+                        />
+                      </div>
                     </div>
-                    <div className="h-3 overflow-hidden rounded-full bg-[#eee6da]">
-                      <div
-                        className="h-full rounded-full bg-[#d56b3d]"
-                        style={{
-                          width: `${Math.max(
-                            8,
-                            (row.amount / maxCategoryAmount) * 100,
-                          )}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
+                  ))
+                )}
+              </div>
+            </section>
           </section>
+        ) : null}
 
-          <section className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm">
-            <div className="grid gap-3 md:grid-cols-[1fr_150px_150px_180px_auto]">
-              <label className="grid gap-1 text-sm font-semibold">
-                Buscar
-                <input
-                  className="field"
-                  placeholder="Nombre o nota"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-              </label>
-              <label className="grid gap-1 text-sm font-semibold">
-                Categoria
-                <select
-                  className="field"
-                  value={categoryFilter}
-                  onChange={(event) => setCategoryFilter(event.target.value)}
-                >
-                  <option>Todas</option>
-                  {categories.map((category) => (
-                    <option key={category}>{category}</option>
-                  ))}
-                  <option>Prestamos</option>
-                  <option>Pagos</option>
-                </select>
-              </label>
-              <label className="grid gap-1 text-sm font-semibold">
-                Desde
-                <input
-                  className="field"
-                  type="date"
-                  value={dateFrom}
-                  onChange={(event) => setDateFrom(event.target.value)}
-                />
-              </label>
-              <label className="grid gap-1 text-sm font-semibold">
-                Hasta
-                <input
-                  className="field"
-                  type="date"
-                  value={dateTo}
-                  onChange={(event) => setDateTo(event.target.value)}
-                />
-              </label>
-              <button
-                className="export-button"
-                type="button"
-                onClick={exportToExcel}
-              >
-                Exportar Excel
-              </button>
-            </div>
-
-            <div className="mt-4 grid gap-3">
+        {activeTab === "movements" ? (
+          <section className="tab-panel">
+            <section className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1 text-sm font-semibold">
+                  Buscar
+                  <input
+                    className="field"
+                    placeholder="Nombre o nota"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                </label>
+                <label className="grid gap-1 text-sm font-semibold">
+                  Categoria
+                  <select
+                    className="field"
+                    value={categoryFilter}
+                    onChange={(event) => setCategoryFilter(event.target.value)}
+                  >
+                    <option>Todas</option>
+                    {categories.map((category) => (
+                      <option key={category}>{category}</option>
+                    ))}
+                    <option>Prestamos</option>
+                    <option>Pagos</option>
+                  </select>
+                </label>
+                <label className="grid gap-1 text-sm font-semibold">
+                  Desde
+                  <input
+                    className="field"
+                    type="date"
+                    value={dateFrom}
+                    onChange={(event) => setDateFrom(event.target.value)}
+                  />
+                </label>
+                <label className="grid gap-1 text-sm font-semibold">
+                  Hasta
+                  <input
+                    className="field"
+                    type="date"
+                    value={dateTo}
+                    onChange={(event) => setDateTo(event.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button className="export-button" type="button" onClick={exportToExcel}>
+                  Exportar Excel
+                </button>
+                <button className="small-action" type="button" onClick={clearAll}>
+                  Limpiar datos
+                </button>
+              </div>
+            </section>
+            <div className="grid gap-3">
               {filteredExpenses.length === 0 ? (
                 <EmptyState text="No hay gastos para mostrar con este filtro." />
               ) : (
@@ -675,8 +687,25 @@ export default function Home() {
               )}
             </div>
           </section>
-        </section>
+        ) : null}
       </div>
+
+      <button className="fab" type="button" onClick={openNewMovement}>
+        +
+      </button>
+
+      <nav className="bottom-tabs" aria-label="Secciones">
+        {tabs.map((tab) => (
+          <button
+            className={activeTab === tab.id ? "active" : ""}
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
 
       {isModalOpen ? (
         <ExpenseModal
