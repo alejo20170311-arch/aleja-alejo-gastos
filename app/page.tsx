@@ -18,6 +18,7 @@ type Expense = {
   paidBy: Person;
   split: SplitMode;
   date: string;
+  createdAt?: string;
   note: string;
   receipt?: Receipt;
 };
@@ -118,6 +119,32 @@ function saveLocalExpenses(expenses: Expense[]) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses));
 }
 
+function movementTimestamp(expense: Expense) {
+  return expense.createdAt ?? `${expense.date}T00:00:00.000`;
+}
+
+function sortNewestFirst(a: Expense, b: Expense) {
+  const byCreated = movementTimestamp(b).localeCompare(movementTimestamp(a));
+  if (byCreated !== 0) return byCreated;
+
+  const byDate = b.date.localeCompare(a.date);
+  if (byDate !== 0) return byDate;
+
+  return b.id.localeCompare(a.id);
+}
+
+function formatMovementDate(expense: Expense) {
+  if (!expense.createdAt) return expense.date;
+
+  const createdAt = new Date(expense.createdAt);
+  if (Number.isNaN(createdAt.getTime())) return expense.date;
+
+  return `${expense.date} - ${createdAt.toLocaleTimeString("es-CO", {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
+}
+
 async function loadRemoteExpenses() {
   if (!supabase) return null;
 
@@ -125,14 +152,15 @@ async function loadRemoteExpenses() {
     .from("house_movements")
     .select("data")
     .eq("household_id", HOUSEHOLD_ID)
-    .order("movement_date", { ascending: false });
+    .order("movement_date", { ascending: false })
+    .order("created_at", { ascending: false });
 
   if (error) {
     console.warn("No se pudieron cargar movimientos de Supabase", error);
     return null;
   }
 
-  return (data ?? []).map((row) => row.data as Expense);
+  return (data ?? []).map((row) => row.data as Expense).sort(sortNewestFirst);
 }
 
 async function upsertRemoteExpense(expense: Expense) {
@@ -315,10 +343,16 @@ export default function Home() {
     };
   }, [expenses]);
 
+  const newestExpenses = useMemo(
+    () => expenses.slice().sort(sortNewestFirst),
+    [expenses],
+  );
+
   const filteredExpenses = useMemo(() => {
     const normalized = query.trim().toLowerCase();
 
-    return expenses
+    return newestExpenses
+      .slice()
       .filter((expense) => {
         const matchesCategory =
           categoryFilter === "Todas" || expense.category === categoryFilter;
@@ -329,9 +363,8 @@ export default function Home() {
           expense.description.toLowerCase().includes(normalized) ||
           expense.note.toLowerCase().includes(normalized);
         return matchesCategory && matchesDateFrom && matchesDateTo && matchesQuery;
-      })
-      .sort((a, b) => b.date.localeCompare(a.date));
-  }, [categoryFilter, dateFrom, dateTo, expenses, query]);
+      });
+  }, [categoryFilter, dateFrom, dateTo, newestExpenses, query]);
 
   function updateDraft<K extends keyof ExpenseDraft>(
     key: K,
@@ -344,6 +377,7 @@ export default function Home() {
     const file = event.target.files?.[0];
     if (!file) return;
     updateDraft("receipt", await readReceipt(file));
+    event.target.value = "";
   }
 
   function addExpense(event: FormEvent<HTMLFormElement>) {
@@ -353,9 +387,13 @@ export default function Home() {
       return;
     }
 
+    const existingExpense = editingId
+      ? expenses.find((expense) => expense.id === editingId)
+      : undefined;
     const savedExpense: Expense = {
       ...draft,
       id: editingId ?? crypto.randomUUID(),
+      createdAt: existingExpense?.createdAt ?? new Date().toISOString(),
       description: draft.description.trim(),
       category:
         draft.type === "loan"
@@ -427,6 +465,7 @@ export default function Home() {
       paidBy: from,
       split: from === "Alejo" ? "alejo" : "aleja",
       date: today,
+      createdAt: new Date().toISOString(),
       note: `Pago para quedar a paces con ${to}.`,
     };
 
@@ -437,6 +476,7 @@ export default function Home() {
   function exportToExcel() {
     const headers = [
       "Fecha",
+      "Registrado",
       "Tipo",
       "Descripcion",
       "Categoria",
@@ -453,6 +493,7 @@ export default function Home() {
       const debt = debtCreatedByExpense(expense);
       return [
         expense.date,
+        expense.createdAt ?? "",
         movementTypeLabel(expense),
         expense.description,
         expense.category,
@@ -637,10 +678,10 @@ export default function Home() {
                 </button>
               </div>
               <div className="mt-4 grid gap-3">
-                {expenses.length === 0 ? (
+                {newestExpenses.length === 0 ? (
                   <EmptyState text="Registra el primer movimiento para empezar." />
                 ) : (
-                  expenses.slice(0, 3).map((expense) => (
+                  newestExpenses.slice(0, 3).map((expense) => (
                     <ExpenseRow
                       expense={expense}
                       key={expense.id}
@@ -1094,16 +1135,27 @@ function ExpenseModal({
 
           {draft.type === "expense" ? (
             <div className="receipt-box">
-              <label className="receipt-button">
-                Adjuntar factura
-                <input
-                  accept="image/*"
-                  capture="environment"
-                  className="sr-only"
-                  type="file"
-                  onChange={onAttachReceipt}
-                />
-              </label>
+              <div className="receipt-actions">
+                <label className="receipt-button">
+                  Tomar foto
+                  <input
+                    accept="image/*"
+                    capture="environment"
+                    className="sr-only"
+                    type="file"
+                    onChange={onAttachReceipt}
+                  />
+                </label>
+                <label className="receipt-button secondary">
+                  Elegir de galeria
+                  <input
+                    accept="image/*"
+                    className="sr-only"
+                    type="file"
+                    onChange={onAttachReceipt}
+                  />
+                </label>
+              </div>
               {draft.receipt ? (
                 <div className="receipt-preview">
                   <img alt="Factura adjunta" src={draft.receipt.dataUrl} />
@@ -1116,7 +1168,7 @@ function ExpenseModal({
                 </div>
               ) : (
                 <p className="text-sm text-[#615b52]">
-                  En celular puede abrir la camara para tomar la foto.
+                  Puedes tomar la foto o escoger una imagen guardada.
                 </p>
               )}
             </div>
@@ -1163,14 +1215,14 @@ function ExpenseRow({
         </div>
         <p className="mt-1 text-sm text-[#615b52]">
           {isPayment
-            ? `${expense.date} - ${expense.paidBy} pago saldo a ${oppositePerson(
+            ? `${formatMovementDate(expense)} - ${expense.paidBy} pago saldo a ${oppositePerson(
                 expense.paidBy,
               )}`
             : isLoan
-            ? `${expense.date} - ${expense.paidBy} presto plata a ${oppositePerson(
+            ? `${formatMovementDate(expense)} - ${expense.paidBy} presto plata a ${oppositePerson(
                 expense.paidBy,
               )}`
-            : `${expense.date} - Pago ${expense.paidBy} - ${splitLabel(
+            : `${formatMovementDate(expense)} - Pago ${expense.paidBy} - ${splitLabel(
                 expense.split,
               )}`}
         </p>
