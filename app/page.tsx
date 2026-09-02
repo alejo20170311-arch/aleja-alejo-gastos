@@ -213,6 +213,84 @@ function movementTypeLabel(expense: Expense) {
   return "Compra o gasto";
 }
 
+function expenseMonth(expense: Expense) {
+  return expense.date.slice(0, 7);
+}
+
+function formatMonth(month: string) {
+  const [year, monthIndex] = month.split("-").map(Number);
+  const monthDate = new Date(year, monthIndex - 1, 1);
+
+  if (Number.isNaN(monthDate.getTime())) return month;
+
+  return monthDate.toLocaleDateString("es-CO", {
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function mergeExpenses(primary: Expense[], fallback: Expense[]) {
+  const byId = new Map<string, Expense>();
+
+  for (const expense of fallback) byId.set(expense.id, expense);
+  for (const expense of primary) byId.set(expense.id, expense);
+
+  return Array.from(byId.values()).sort(sortNewestFirst);
+}
+
+function summarizeExpenses(expensesToSummarize: Expense[]) {
+  const paid = { Alejo: 0, Aleja: 0 };
+  const owed = { Alejo: 0, Aleja: 0 };
+  const directDebts = { Alejo: 0, Aleja: 0 };
+  const byCategory = new Map<string, number>();
+  let sharedTotal = 0;
+  let loanTotal = 0;
+
+  for (const expense of expensesToSummarize) {
+    const isLoan = expense.type === "loan";
+    const isPayment = expense.type === "payment";
+
+    if (isLoan) {
+      loanTotal += expense.amount;
+    }
+
+    if (!isLoan && !isPayment) {
+      paid[expense.paidBy] += expense.amount;
+      owed.Alejo += personalShare(expense, "Alejo");
+      owed.Aleja += personalShare(expense, "Aleja");
+      byCategory.set(
+        expense.category,
+        (byCategory.get(expense.category) ?? 0) + expense.amount,
+      );
+      if (expense.split === "shared") sharedTotal += expense.amount;
+    }
+
+    const debt = debtCreatedByExpense(expense);
+    if (debt) directDebts[debt.from] += debt.amount;
+  }
+
+  const categoryRows = Array.from(byCategory.entries())
+    .map(([category, amount]) => ({ category, amount }))
+    .sort((a, b) => b.amount - a.amount);
+  const alejoNet = directDebts.Aleja - directDebts.Alejo;
+  const settle =
+    alejoNet > 0
+      ? { from: "Aleja", to: "Alejo", amount: alejoNet }
+      : { from: "Alejo", to: "Aleja", amount: Math.abs(alejoNet) };
+
+  return {
+    total: expensesToSummarize.reduce((sum, expense) => sum + expense.amount, 0),
+    paid,
+    owed,
+    directDebts,
+    sharedTotal,
+    loanTotal,
+    categoryRows,
+    topCategory: categoryRows[0],
+    settle,
+  };
+}
+
 export default function Home() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [draft, setDraft] = useState<ExpenseDraft>(initialDraft);
@@ -220,6 +298,7 @@ export default function Home() {
   const [categoryFilter, setCategoryFilter] = useState("Todas");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [analysisMonth, setAnalysisMonth] = useState(today.slice(0, 7));
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -260,14 +339,13 @@ export default function Home() {
         return;
       }
 
+      const localExpenses = getStoredExpenses().sort(sortNewestFirst);
+      setExpenses(localExpenses);
+      setHasLoaded(true);
+
       const remoteExpenses = isSupabaseConfigured
         ? await loadRemoteExpenses()
         : null;
-      const localExpenses = getStoredExpenses();
-      const nextExpenses =
-        remoteExpenses && remoteExpenses.length > 0
-          ? remoteExpenses
-          : localExpenses;
 
       if (
         isSupabaseConfigured &&
@@ -278,9 +356,14 @@ export default function Home() {
         await Promise.all(localExpenses.map((expense) => upsertRemoteExpense(expense)));
       }
 
-      setExpenses(nextExpenses);
-      saveLocalExpenses(nextExpenses);
-      setHasLoaded(true);
+      if (remoteExpenses) {
+        const nextExpenses =
+          remoteExpenses.length > 0
+            ? mergeExpenses(remoteExpenses, localExpenses)
+            : localExpenses;
+        setExpenses(nextExpenses);
+        saveLocalExpenses(nextExpenses);
+      }
     }
 
     void loadExpenses();
@@ -290,57 +373,22 @@ export default function Home() {
     if (hasLoaded) saveLocalExpenses(expenses);
   }, [expenses, hasLoaded]);
 
-  const totals = useMemo(() => {
-    const paid = { Alejo: 0, Aleja: 0 };
-    const owed = { Alejo: 0, Aleja: 0 };
-    const directDebts = { Alejo: 0, Aleja: 0 };
-    const byCategory = new Map<string, number>();
-    let sharedTotal = 0;
-    let loanTotal = 0;
+  const totals = useMemo(() => summarizeExpenses(expenses), [expenses]);
 
-    for (const expense of expenses) {
-      const isLoan = expense.type === "loan";
-      const isPayment = expense.type === "payment";
+  const analysisExpenses = useMemo(
+    () => expenses.filter((expense) => expenseMonth(expense) === analysisMonth),
+    [analysisMonth, expenses],
+  );
 
-      if (isLoan) {
-        loanTotal += expense.amount;
-      }
+  const analysisTotals = useMemo(
+    () => summarizeExpenses(analysisExpenses),
+    [analysisExpenses],
+  );
 
-      if (!isLoan && !isPayment) {
-        paid[expense.paidBy] += expense.amount;
-        owed.Alejo += personalShare(expense, "Alejo");
-        owed.Aleja += personalShare(expense, "Aleja");
-        byCategory.set(
-          expense.category,
-          (byCategory.get(expense.category) ?? 0) + expense.amount,
-        );
-        if (expense.split === "shared") sharedTotal += expense.amount;
-      }
-
-      const debt = debtCreatedByExpense(expense);
-      if (debt) directDebts[debt.from] += debt.amount;
-    }
-
-    const categoryRows = Array.from(byCategory.entries())
-      .map(([category, amount]) => ({ category, amount }))
-      .sort((a, b) => b.amount - a.amount);
-    const alejoNet = directDebts.Aleja - directDebts.Alejo;
-    const settle =
-      alejoNet > 0
-        ? { from: "Aleja", to: "Alejo", amount: alejoNet }
-        : { from: "Alejo", to: "Aleja", amount: Math.abs(alejoNet) };
-
-    return {
-      total: expenses.reduce((sum, expense) => sum + expense.amount, 0),
-      paid,
-      owed,
-      directDebts,
-      sharedTotal,
-      loanTotal,
-      categoryRows,
-      topCategory: categoryRows[0],
-      settle,
-    };
+  const analysisMonthOptions = useMemo(() => {
+    const months = new Set([today.slice(0, 7)]);
+    for (const expense of expenses) months.add(expenseMonth(expense));
+    return Array.from(months).sort((a, b) => b.localeCompare(a));
   }, [expenses]);
 
   const newestExpenses = useMemo(
@@ -557,7 +605,7 @@ export default function Home() {
     }
   }
 
-  const maxCategoryAmount = totals.categoryRows[0]?.amount ?? 0;
+  const maxCategoryAmount = analysisTotals.categoryRows[0]?.amount ?? 0;
   const hasBalance = totals.settle.amount > 0.5;
 
   if (isSupabaseConfigured && !authReady) {
@@ -746,15 +794,43 @@ export default function Home() {
         {activeTab === "analysis" ? (
           <section className="tab-panel">
             <section className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm">
-              <h2 className="text-xl font-bold">En que gastamos mas</h2>
-              <p className="text-sm text-[#615b52]">
-                Comparacion por categoria con los gastos registrados.
-              </p>
+              <div className="analysis-header">
+                <div>
+                  <h2 className="text-xl font-bold">En que gastamos mas</h2>
+                  <p className="text-sm text-[#615b52]">
+                    Comparacion por categoria segun la fecha de compra.
+                  </p>
+                </div>
+                <label className="month-filter">
+                  Mes
+                  <select
+                    className="field"
+                    value={analysisMonth}
+                    onChange={(event) => setAnalysisMonth(event.target.value)}
+                  >
+                    {analysisMonthOptions.map((month) => (
+                      <option key={month} value={month}>
+                        {formatMonth(month)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="analysis-summary">
+                <Metric
+                  label="Total del mes"
+                  value={currency.format(analysisTotals.total)}
+                />
+                <Metric
+                  label="Top categoria"
+                  value={analysisTotals.topCategory?.category ?? "Sin datos"}
+                />
+              </div>
               <div className="mt-4 grid gap-3">
-                {totals.categoryRows.length === 0 ? (
-                  <EmptyState text="Cuando registren gastos, aqui apareceran los indicadores." />
+                {analysisTotals.categoryRows.length === 0 ? (
+                  <EmptyState text="No hay compras registradas para este mes." />
                 ) : (
-                  totals.categoryRows.map((row) => (
+                  analysisTotals.categoryRows.map((row) => (
                     <div className="grid gap-2" key={row.category}>
                       <div className="flex items-center justify-between gap-3 text-sm">
                         <span className="font-semibold">{row.category}</span>
