@@ -102,35 +102,118 @@ function debtCreatedByExpense(expense: Expense) {
   return { from: owner, to: expense.paidBy, amount: expense.amount };
 }
 
+function isPerson(value: unknown): value is Person {
+  return value === "Alejo" || value === "Aleja";
+}
+
+function isSplitMode(value: unknown): value is SplitMode {
+  return value === "shared" || value === "alejo" || value === "aleja";
+}
+
+function isMovementType(value: unknown): value is MovementType {
+  return value === "expense" || value === "loan" || value === "payment";
+}
+
+function isReceipt(value: unknown): value is Receipt {
+  if (!value || typeof value !== "object") return false;
+
+  const receipt = value as Partial<Receipt>;
+  return typeof receipt.name === "string" && typeof receipt.dataUrl === "string";
+}
+
+function normalizeExpense(value: unknown): Expense | null {
+  if (!value || typeof value !== "object") return null;
+
+  const raw = value as Partial<Expense>;
+  const amount = Number(raw.amount);
+  const description =
+    typeof raw.description === "string" && raw.description.trim()
+      ? raw.description.trim()
+      : "Movimiento sin descripcion";
+  const date =
+    typeof raw.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.date)
+      ? raw.date
+      : today;
+  const type = isMovementType(raw.type) ? raw.type : "expense";
+
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+
+  return {
+    id:
+      typeof raw.id === "string" && raw.id.trim()
+        ? raw.id
+        : crypto.randomUUID(),
+    type,
+    description,
+    amount,
+    category:
+      typeof raw.category === "string" && raw.category.trim()
+        ? raw.category
+        : type === "loan"
+          ? "Prestamos"
+          : type === "payment"
+            ? "Pagos"
+            : "Otros",
+    paidBy: isPerson(raw.paidBy) ? raw.paidBy : "Alejo",
+    split: isSplitMode(raw.split) ? raw.split : "shared",
+    date,
+    createdAt: typeof raw.createdAt === "string" ? raw.createdAt : undefined,
+    note: typeof raw.note === "string" ? raw.note : "",
+    receipt: isReceipt(raw.receipt) ? raw.receipt : undefined,
+  };
+}
+
 function getStoredExpenses() {
   if (typeof window === "undefined") return [];
 
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY);
     if (!stored) return [];
-    const parsed = JSON.parse(stored) as Expense[];
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = JSON.parse(stored) as unknown;
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map((expense) => normalizeExpense(expense))
+      .filter((expense): expense is Expense => Boolean(expense))
+      .sort(sortNewestFirst);
   } catch {
     return [];
   }
 }
 
 function saveLocalExpenses(expenses: Expense[]) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses));
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses));
+    return;
+  } catch (error) {
+    console.warn("No se pudo guardar el cache completo de movimientos", error);
+  }
+
+  try {
+    const lightExpenses = expenses.map((expense) => ({
+      ...expense,
+      receipt: undefined,
+    }));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(lightExpenses));
+  } catch (error) {
+    console.warn("No se pudo guardar el cache liviano de movimientos", error);
+  }
 }
 
 function movementTimestamp(expense: Expense) {
-  return expense.createdAt ?? `${expense.date}T00:00:00.000`;
+  return expense.createdAt ?? `${expense.date || today}T00:00:00.000`;
 }
 
 function sortNewestFirst(a: Expense, b: Expense) {
   const byCreated = movementTimestamp(b).localeCompare(movementTimestamp(a));
   if (byCreated !== 0) return byCreated;
 
-  const byDate = b.date.localeCompare(a.date);
+  const byDate = (b.date || "").localeCompare(a.date || "");
   if (byDate !== 0) return byDate;
 
-  return b.id.localeCompare(a.id);
+  return (b.id || "").localeCompare(a.id || "");
 }
 
 function formatMovementDate(expense: Expense) {
@@ -160,7 +243,10 @@ async function loadRemoteExpenses() {
     return null;
   }
 
-  return (data ?? []).map((row) => row.data as Expense).sort(sortNewestFirst);
+  return (data ?? [])
+    .map((row) => normalizeExpense(row.data))
+    .filter((expense): expense is Expense => Boolean(expense))
+    .sort(sortNewestFirst);
 }
 
 async function upsertRemoteExpense(expense: Expense) {
@@ -334,12 +420,12 @@ export default function Home() {
 
     async function loadExpenses() {
       if (isSupabaseConfigured && !user) {
-        setExpenses([]);
-        setHasLoaded(true);
+        setExpenses(getStoredExpenses());
+        setHasLoaded(false);
         return;
       }
 
-      const localExpenses = getStoredExpenses().sort(sortNewestFirst);
+      const localExpenses = getStoredExpenses();
       setExpenses(localExpenses);
       setHasLoaded(true);
 
@@ -571,6 +657,7 @@ export default function Home() {
 
   async function signOut() {
     await supabase?.auth.signOut();
+    setHasLoaded(false);
     setExpenses([]);
     setSessionMenuOpen(false);
     setPasswordPanelOpen(false);
