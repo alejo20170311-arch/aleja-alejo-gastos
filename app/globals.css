@@ -139,6 +139,18 @@ body {
   font-weight: 900;
 }
 
+.sync-message {
+  margin-bottom: 1rem;
+  border: 1px solid #d7a35c;
+  border-radius: 8px;
+  background: rgba(255, 250, 241, 0.96);
+  color: #6b3a15;
+  padding: 0.85rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 800;
+  box-shadow: 0 10px 30px rgba(32, 33, 29, 0.12);
+}
+
 .session-area {
   position: relative;
   display: flex;

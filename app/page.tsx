@@ -29,6 +29,7 @@ type ExpenseDraft = Omit<Expense, "id" | "amount" | "receipt"> & {
 
 const STORAGE_KEY = "casa-aleja-alejo-expenses";
 const HOUSEHOLD_ID = "aleja-alejo";
+const REMOTE_SYNC_INTERVAL_MS = 15000;
 const people: Person[] = ["Alejo", "Aleja"];
 const tabs: { id: ActiveTab; label: string }[] = [
   { id: "home", label: "Inicio" },
@@ -250,7 +251,7 @@ async function loadRemoteExpenses() {
 }
 
 async function upsertRemoteExpense(expense: Expense) {
-  if (!supabase) return;
+  if (!supabase) return true;
 
   const { error } = await supabase.from("house_movements").upsert({
     id: expense.id,
@@ -261,11 +262,14 @@ async function upsertRemoteExpense(expense: Expense) {
 
   if (error) {
     console.warn("No se pudo guardar en Supabase", error);
+    return false;
   }
+
+  return true;
 }
 
 async function deleteRemoteExpense(id: string) {
-  if (!supabase) return;
+  if (!supabase) return true;
 
   const { error } = await supabase
     .from("house_movements")
@@ -275,7 +279,10 @@ async function deleteRemoteExpense(id: string) {
 
   if (error) {
     console.warn("No se pudo eliminar en Supabase", error);
+    return false;
   }
+
+  return true;
 }
 
 function readReceipt(file: File) {
@@ -313,15 +320,6 @@ function formatMonth(month: string) {
     month: "long",
     year: "numeric",
   });
-}
-
-function mergeExpenses(primary: Expense[], fallback: Expense[]) {
-  const byId = new Map<string, Expense>();
-
-  for (const expense of fallback) byId.set(expense.id, expense);
-  for (const expense of primary) byId.set(expense.id, expense);
-
-  return Array.from(byId.values()).sort(sortNewestFirst);
 }
 
 function summarizeExpenses(expensesToSummarize: Expense[]) {
@@ -395,6 +393,7 @@ export default function Home() {
   const [passwordPanelOpen, setPasswordPanelOpen] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [passwordMessage, setPasswordMessage] = useState("");
+  const [syncMessage, setSyncMessage] = useState("");
   const [viewingReceipt, setViewingReceipt] = useState<Receipt | null>(null);
 
   useEffect(() => {
@@ -443,10 +442,7 @@ export default function Home() {
       }
 
       if (remoteExpenses) {
-        const nextExpenses =
-          remoteExpenses.length > 0
-            ? mergeExpenses(remoteExpenses, localExpenses)
-            : localExpenses;
+        const nextExpenses = remoteExpenses.length > 0 ? remoteExpenses : localExpenses;
         setExpenses(nextExpenses);
         saveLocalExpenses(nextExpenses);
       }
@@ -458,6 +454,40 @@ export default function Home() {
   useEffect(() => {
     if (hasLoaded) saveLocalExpenses(expenses);
   }, [expenses, hasLoaded]);
+
+  useEffect(() => {
+    if (!authReady || !user || !isSupabaseConfigured) return;
+
+    let isMounted = true;
+
+    async function refreshFromRemote() {
+      const remoteExpenses = await loadRemoteExpenses();
+      if (!isMounted || !remoteExpenses) return;
+
+      setExpenses(remoteExpenses);
+      saveLocalExpenses(remoteExpenses);
+    }
+
+    function refreshWhenVisible() {
+      if (document.visibilityState === "visible") {
+        void refreshFromRemote();
+      }
+    }
+
+    const intervalId = window.setInterval(
+      refreshFromRemote,
+      REMOTE_SYNC_INTERVAL_MS,
+    );
+    window.addEventListener("focus", refreshFromRemote);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshFromRemote);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [authReady, user]);
 
   const totals = useMemo(() => summarizeExpenses(expenses), [expenses]);
 
@@ -514,8 +544,9 @@ export default function Home() {
     event.target.value = "";
   }
 
-  function addExpense(event: FormEvent<HTMLFormElement>) {
+  async function addExpense(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setSyncMessage("");
     const amount = Number(draft.amount);
     if (!draft.description.trim() || !Number.isFinite(amount) || amount <= 0) {
       return;
@@ -540,6 +571,14 @@ export default function Home() {
       receipt: draft.type === "expense" ? draft.receipt : undefined,
     };
 
+    const savedRemote = await upsertRemoteExpense(savedExpense);
+    if (!savedRemote) {
+      setSyncMessage(
+        "No se pudo guardar en la nube. Revisa internet y vuelve a intentarlo.",
+      );
+      return;
+    }
+
     setExpenses((current) =>
       editingId
         ? current.map((expense) =>
@@ -547,15 +586,23 @@ export default function Home() {
           )
         : [savedExpense, ...current],
     );
-    void upsertRemoteExpense(savedExpense);
     setDraft({ ...initialDraft, paidBy: draft.paidBy, date: today });
     setEditingId(null);
     setIsModalOpen(false);
   }
 
-  function removeExpense(id: string) {
+  async function removeExpense(id: string) {
+    setSyncMessage("");
+    const deletedRemote = await deleteRemoteExpense(id);
+
+    if (!deletedRemote) {
+      setSyncMessage(
+        "No se pudo eliminar en la nube. Revisa internet y vuelve a intentarlo.",
+      );
+      return;
+    }
+
     setExpenses((current) => current.filter((expense) => expense.id !== id));
-    void deleteRemoteExpense(id);
   }
 
   function openNewMovement() {
@@ -586,8 +633,9 @@ export default function Home() {
     setIsModalOpen(true);
   }
 
-  function registerSettlementPayment() {
+  async function registerSettlementPayment() {
     if (!hasBalance) return;
+    setSyncMessage("");
     const from = totals.settle.from as Person;
     const to = totals.settle.to as Person;
     const payment: Expense = {
@@ -603,8 +651,15 @@ export default function Home() {
       note: `Pago para quedar a paces con ${to}.`,
     };
 
+    const savedRemote = await upsertRemoteExpense(payment);
+    if (!savedRemote) {
+      setSyncMessage(
+        "No se pudo guardar el pago en la nube. Revisa internet y vuelve a intentarlo.",
+      );
+      return;
+    }
+
     setExpenses((current) => [payment, ...current]);
-    void upsertRemoteExpense(payment);
   }
 
   function exportToExcel() {
@@ -686,7 +741,16 @@ export default function Home() {
     if (expenses.length === 0) return;
     if (window.confirm("Borrar todos los gastos registrados?")) {
       if (supabase) {
-        await Promise.all(expenses.map((expense) => deleteRemoteExpense(expense.id)));
+        const results = await Promise.all(
+          expenses.map((expense) => deleteRemoteExpense(expense.id)),
+        );
+
+        if (results.some((deleted) => !deleted)) {
+          setSyncMessage(
+            "No se pudieron borrar todos los movimientos en la nube. Revisa internet y vuelve a intentarlo.",
+          );
+          return;
+        }
       }
       setExpenses([]);
     }
@@ -772,6 +836,12 @@ export default function Home() {
       </section>
 
       <div className="mx-auto w-full max-w-3xl px-4 pb-28 pt-4 sm:px-6">
+        {syncMessage ? (
+          <div className="sync-message" role="status">
+            {syncMessage}
+          </div>
+        ) : null}
+
         {activeTab === "home" ? (
           <section className="tab-panel">
             <div className="hero-balance">
