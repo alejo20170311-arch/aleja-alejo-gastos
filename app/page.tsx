@@ -1,6 +1,13 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { User } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "./supabaseClient";
 
@@ -29,7 +36,9 @@ type ExpenseDraft = Omit<Expense, "id" | "amount" | "receipt"> & {
 
 const STORAGE_KEY = "casa-aleja-alejo-expenses";
 const HOUSEHOLD_ID = "aleja-alejo";
-const REMOTE_SYNC_INTERVAL_MS = 15000;
+const REMOTE_SYNC_INTERVAL_MS = 30000;
+const RECEIPT_MAX_SIZE = 1400;
+const RECEIPT_QUALITY = 0.72;
 const people: Person[] = ["Alejo", "Aleja"];
 const tabs: { id: ActiveTab; label: string }[] = [
   { id: "home", label: "Inicio" },
@@ -186,13 +195,6 @@ function saveLocalExpenses(expenses: Expense[]) {
   if (typeof window === "undefined") return;
 
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses));
-    return;
-  } catch (error) {
-    console.warn("No se pudo guardar el cache completo de movimientos", error);
-  }
-
-  try {
     const lightExpenses = expenses.map((expense) => ({
       ...expense,
       receipt: undefined,
@@ -201,6 +203,15 @@ function saveLocalExpenses(expenses: Expense[]) {
   } catch (error) {
     console.warn("No se pudo guardar el cache liviano de movimientos", error);
   }
+}
+
+function mergeExpenses(primary: Expense[], fallback: Expense[]) {
+  const byId = new Map<string, Expense>();
+
+  for (const expense of fallback) byId.set(expense.id, expense);
+  for (const expense of primary) byId.set(expense.id, expense);
+
+  return Array.from(byId.values()).sort(sortNewestFirst);
 }
 
 function movementTimestamp(expense: Expense) {
@@ -293,6 +304,41 @@ function readReceipt(file: File) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function loadImage(dataUrl: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = dataUrl;
+  });
+}
+
+async function compressReceipt(receipt: Receipt) {
+  const image = await loadImage(receipt.dataUrl);
+  const scale = Math.min(
+    1,
+    RECEIPT_MAX_SIZE / Math.max(image.naturalWidth, image.naturalHeight),
+  );
+
+  if (scale >= 1 && receipt.dataUrl.length < 650000) {
+    return receipt;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+
+  const context = canvas.getContext("2d");
+  if (!context) return receipt;
+
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  return {
+    name: receipt.name.replace(/\.[^.]+$/, "") || "factura",
+    dataUrl: canvas.toDataURL("image/jpeg", RECEIPT_QUALITY),
+  };
 }
 
 function csvCell(value: string | number) {
@@ -395,6 +441,19 @@ export default function Home() {
   const [passwordMessage, setPasswordMessage] = useState("");
   const [syncMessage, setSyncMessage] = useState("");
   const [viewingReceipt, setViewingReceipt] = useState<Receipt | null>(null);
+  const pendingUpsertsRef = useRef(new Map<string, Expense>());
+  const pendingDeletesRef = useRef(new Set<string>());
+
+  function mergeRemoteWithPending(remoteExpenses: Expense[]) {
+    const withoutPendingDeletes = remoteExpenses.filter(
+      (expense) => !pendingDeletesRef.current.has(expense.id),
+    );
+
+    return mergeExpenses(
+      Array.from(pendingUpsertsRef.current.values()),
+      withoutPendingDeletes,
+    );
+  }
 
   useEffect(() => {
     if (!supabase) return;
@@ -442,7 +501,10 @@ export default function Home() {
       }
 
       if (remoteExpenses) {
-        const nextExpenses = remoteExpenses.length > 0 ? remoteExpenses : localExpenses;
+        const nextExpenses =
+          remoteExpenses.length > 0
+            ? mergeRemoteWithPending(remoteExpenses)
+            : mergeRemoteWithPending(localExpenses);
         setExpenses(nextExpenses);
         saveLocalExpenses(nextExpenses);
       }
@@ -464,8 +526,9 @@ export default function Home() {
       const remoteExpenses = await loadRemoteExpenses();
       if (!isMounted || !remoteExpenses) return;
 
-      setExpenses(remoteExpenses);
-      saveLocalExpenses(remoteExpenses);
+      const nextExpenses = mergeRemoteWithPending(remoteExpenses);
+      setExpenses(nextExpenses);
+      saveLocalExpenses(nextExpenses);
     }
 
     function refreshWhenVisible() {
@@ -540,7 +603,8 @@ export default function Home() {
   async function attachReceipt(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    updateDraft("receipt", await readReceipt(file));
+    const receipt = await readReceipt(file);
+    updateDraft("receipt", await compressReceipt(receipt));
     event.target.value = "";
   }
 
@@ -571,14 +635,7 @@ export default function Home() {
       receipt: draft.type === "expense" ? draft.receipt : undefined,
     };
 
-    const savedRemote = await upsertRemoteExpense(savedExpense);
-    if (!savedRemote) {
-      setSyncMessage(
-        "No se pudo guardar en la nube. Revisa internet y vuelve a intentarlo.",
-      );
-      return;
-    }
-
+    pendingUpsertsRef.current.set(savedExpense.id, savedExpense);
     setExpenses((current) =>
       editingId
         ? current.map((expense) =>
@@ -589,20 +646,59 @@ export default function Home() {
     setDraft({ ...initialDraft, paidBy: draft.paidBy, date: today });
     setEditingId(null);
     setIsModalOpen(false);
+
+    const savedRemote = await upsertRemoteExpense(savedExpense);
+    pendingUpsertsRef.current.delete(savedExpense.id);
+
+    if (!savedRemote) {
+      setExpenses((current) =>
+        editingId
+          ? current.map((expense) =>
+              expense.id === editingId && existingExpense
+                ? existingExpense
+                : expense,
+            )
+          : current.filter((expense) => expense.id !== savedExpense.id),
+      );
+      setSyncMessage(
+        "No se pudo guardar en la nube. Revisa internet y vuelve a intentarlo.",
+      );
+      return;
+    }
+
+    const remoteExpenses = await loadRemoteExpenses();
+    if (remoteExpenses) {
+      const nextExpenses = mergeRemoteWithPending(remoteExpenses);
+      setExpenses(nextExpenses);
+      saveLocalExpenses(nextExpenses);
+    }
   }
 
   async function removeExpense(id: string) {
     setSyncMessage("");
+    const expenseToRemove = expenses.find((expense) => expense.id === id);
+    pendingDeletesRef.current.add(id);
+    setExpenses((current) => current.filter((expense) => expense.id !== id));
+
     const deletedRemote = await deleteRemoteExpense(id);
+    pendingDeletesRef.current.delete(id);
 
     if (!deletedRemote) {
+      if (expenseToRemove) {
+        setExpenses((current) => mergeExpenses([expenseToRemove], current));
+      }
       setSyncMessage(
         "No se pudo eliminar en la nube. Revisa internet y vuelve a intentarlo.",
       );
       return;
     }
 
-    setExpenses((current) => current.filter((expense) => expense.id !== id));
+    const remoteExpenses = await loadRemoteExpenses();
+    if (remoteExpenses) {
+      const nextExpenses = mergeRemoteWithPending(remoteExpenses);
+      setExpenses(nextExpenses);
+      saveLocalExpenses(nextExpenses);
+    }
   }
 
   function openNewMovement() {
@@ -651,15 +747,28 @@ export default function Home() {
       note: `Pago para quedar a paces con ${to}.`,
     };
 
+    pendingUpsertsRef.current.set(payment.id, payment);
+    setExpenses((current) => [payment, ...current]);
+
     const savedRemote = await upsertRemoteExpense(payment);
+    pendingUpsertsRef.current.delete(payment.id);
+
     if (!savedRemote) {
+      setExpenses((current) =>
+        current.filter((expense) => expense.id !== payment.id),
+      );
       setSyncMessage(
         "No se pudo guardar el pago en la nube. Revisa internet y vuelve a intentarlo.",
       );
       return;
     }
 
-    setExpenses((current) => [payment, ...current]);
+    const remoteExpenses = await loadRemoteExpenses();
+    if (remoteExpenses) {
+      const nextExpenses = mergeRemoteWithPending(remoteExpenses);
+      setExpenses(nextExpenses);
+      saveLocalExpenses(nextExpenses);
+    }
   }
 
   function exportToExcel() {
