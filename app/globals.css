@@ -200,6 +200,64 @@ body {
   font-weight: 900;
 }
 
+.account-person-control {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.account-person-control > span {
+  color: #615b52;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.account-person-control > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.account-person-control button.active {
+  background: #273c35;
+  color: #ffffff;
+}
+
+.identity-setup {
+  display: grid;
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+  border: 1px solid #b79665;
+  border-radius: 8px;
+  background: #fffaf1;
+  padding: 1rem;
+  box-shadow: 0 10px 30px rgba(32, 33, 29, 0.1);
+}
+
+.identity-setup h2 {
+  font-size: 1.05rem;
+  font-weight: 900;
+}
+
+.identity-setup p {
+  margin-top: 0.2rem;
+  color: #615b52;
+  font-size: 0.88rem;
+}
+
+.identity-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.identity-options button {
+  min-height: 42px;
+  border-radius: 6px;
+  background: #273c35;
+  color: #ffffff;
+  font-weight: 900;
+}
+
 .password-form {
   display: grid;
   gap: 0.5rem;

@@ -38,7 +38,13 @@ create policy "allow shared house update"
   to authenticated
   using (
     household_id = 'aleja-alejo'
-    and data ->> 'createdBy' = auth.uid()::text
+    and (
+      data ->> 'createdBy' = auth.uid()::text
+      or (
+        data ->> 'createdBy' is null
+        and data ->> 'paidBy' = auth.jwt() -> 'user_metadata' ->> 'person'
+      )
+    )
   )
   with check (
     household_id = 'aleja-alejo'
@@ -51,7 +57,13 @@ create policy "allow shared house delete"
   to authenticated
   using (
     household_id = 'aleja-alejo'
-    and data ->> 'createdBy' = auth.uid()::text
+    and (
+      data ->> 'createdBy' = auth.uid()::text
+      or (
+        data ->> 'createdBy' is null
+        and data ->> 'paidBy' = auth.jwt() -> 'user_metadata' ->> 'person'
+      )
+    )
   );
 
 create or replace function public.set_updated_at()

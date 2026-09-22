@@ -287,19 +287,34 @@ async function upsertRemoteExpense(expense: Expense) {
   return true;
 }
 
-async function updateRemoteExpense(expense: Expense, createdBy: string) {
+async function updateRemoteExpense(
+  expense: Expense,
+  previousExpense: Expense,
+  userId: string,
+  accountPerson?: Person,
+) {
   if (!supabase) return true;
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("house_movements")
     .update({
       movement_date: expense.date,
       data: expense,
     })
     .eq("id", expense.id)
-    .eq("household_id", HOUSEHOLD_ID)
-    .eq("data->>createdBy", createdBy)
-    .select("id");
+    .eq("household_id", HOUSEHOLD_ID);
+
+  if (previousExpense.createdBy) {
+    query = query.eq("data->>createdBy", userId);
+  } else if (accountPerson) {
+    query = query
+      .is("data->>createdBy", null)
+      .eq("data->>paidBy", accountPerson);
+  } else {
+    return false;
+  }
+
+  const { data, error } = await query.select("id");
 
   if (error || !data?.length) {
     console.warn("No se pudo actualizar en Supabase", error);
@@ -309,16 +324,30 @@ async function updateRemoteExpense(expense: Expense, createdBy: string) {
   return true;
 }
 
-async function deleteRemoteExpense(id: string, createdBy: string) {
+async function deleteRemoteExpense(
+  expense: Expense,
+  userId: string,
+  accountPerson?: Person,
+) {
   if (!supabase) return true;
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("house_movements")
     .delete()
-    .eq("id", id)
-    .eq("household_id", HOUSEHOLD_ID)
-    .eq("data->>createdBy", createdBy)
-    .select("id");
+    .eq("id", expense.id)
+    .eq("household_id", HOUSEHOLD_ID);
+
+  if (expense.createdBy) {
+    query = query.eq("data->>createdBy", userId);
+  } else if (accountPerson) {
+    query = query
+      .is("data->>createdBy", null)
+      .eq("data->>paidBy", accountPerson);
+  } else {
+    return false;
+  }
+
+  const { data, error } = await query.select("id");
 
   if (error || !data?.length) {
     console.warn("No se pudo eliminar en Supabase", error);
@@ -472,9 +501,13 @@ export default function Home() {
   const [newPassword, setNewPassword] = useState("");
   const [passwordMessage, setPasswordMessage] = useState("");
   const [syncMessage, setSyncMessage] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
   const [viewingReceipt, setViewingReceipt] = useState<Receipt | null>(null);
   const pendingUpsertsRef = useRef(new Map<string, Expense>());
   const pendingDeletesRef = useRef(new Set<string>());
+  const accountPerson = isPerson(user?.user_metadata?.person)
+    ? user.user_metadata.person
+    : undefined;
 
   function mergeRemoteWithPending(remoteExpenses: Expense[]) {
     const withoutPendingDeletes = remoteExpenses.filter(
@@ -489,7 +522,26 @@ export default function Home() {
 
   function canManageExpense(expense: Expense) {
     if (!isSupabaseConfigured) return true;
-    return Boolean(user?.id && expense.createdBy === user.id);
+    if (user?.id && expense.createdBy === user.id) return true;
+    return Boolean(!expense.createdBy && accountPerson === expense.paidBy);
+  }
+
+  async function saveAccountPerson(person: Person) {
+    if (!supabase) return;
+    setProfileSaving(true);
+    setSyncMessage("");
+    const { data, error } = await supabase.auth.updateUser({
+      data: { person },
+    });
+    setProfileSaving(false);
+
+    if (error || !data.user) {
+      setSyncMessage("No se pudo guardar quien usa esta cuenta. Intenta otra vez.");
+      return;
+    }
+
+    setUser(data.user);
+    setSyncMessage(`Esta cuenta quedo asignada a ${person}.`);
   }
 
   useEffect(() => {
@@ -696,7 +748,9 @@ export default function Home() {
     const savedRemote = existingExpense
       ? await updateRemoteExpense(
           savedExpense,
-          existingExpense.createdBy ?? "local-user",
+          existingExpense,
+          user?.id ?? "local-user",
+          accountPerson,
         )
       : await upsertRemoteExpense(savedExpense);
     pendingUpsertsRef.current.delete(savedExpense.id);
@@ -737,8 +791,9 @@ export default function Home() {
     setExpenses((current) => current.filter((expense) => expense.id !== id));
 
     const deletedRemote = await deleteRemoteExpense(
-      id,
-      expenseToRemove.createdBy ?? "local-user",
+      expenseToRemove,
+      user?.id ?? "local-user",
+      accountPerson,
     );
     pendingDeletesRef.current.delete(id);
 
@@ -924,7 +979,11 @@ export default function Home() {
       if (supabase) {
         const results = await Promise.all(
           ownExpenses.map((expense) =>
-            deleteRemoteExpense(expense.id, expense.createdBy ?? "local-user"),
+            deleteRemoteExpense(
+              expense,
+              user?.id ?? "local-user",
+              accountPerson,
+            ),
           ),
         );
 
@@ -988,6 +1047,22 @@ export default function Home() {
               {sessionMenuOpen ? (
                 <div className="session-menu">
                   <p>{user?.email}</p>
+                  <div className="account-person-control">
+                    <span>Esta cuenta es de:</span>
+                    <div>
+                      {people.map((person) => (
+                        <button
+                          className={accountPerson === person ? "active" : ""}
+                          disabled={profileSaving}
+                          key={person}
+                          type="button"
+                          onClick={() => void saveAccountPerson(person)}
+                        >
+                          {person}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <button
                     type="button"
                     onClick={() => {
@@ -1022,6 +1097,30 @@ export default function Home() {
       </section>
 
       <div className="mx-auto w-full max-w-3xl px-4 pb-28 pt-4 sm:px-6">
+        {!accountPerson && expenses.some((expense) => !expense.createdBy) ? (
+          <section className="identity-setup" aria-labelledby="identity-title">
+            <div>
+              <h2 id="identity-title">¿Quien usa esta cuenta?</h2>
+              <p>
+                Elige una vez para recuperar editar y eliminar en tus movimientos
+                anteriores.
+              </p>
+            </div>
+            <div className="identity-options">
+              {people.map((person) => (
+                <button
+                  disabled={profileSaving}
+                  key={person}
+                  type="button"
+                  onClick={() => void saveAccountPerson(person)}
+                >
+                  Soy {person}
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         {syncMessage ? (
           <div className="sync-message" role="status">
             {syncMessage}
@@ -1654,7 +1753,7 @@ function ExpenseRow({
             ? canManage
               ? "Registrado por ti"
               : `Registrado por ${expense.createdByEmail ?? "la otra cuenta"}`
-            : "Movimiento anterior sin propietario asignado"}
+            : `Movimiento anterior asociado a ${expense.paidBy}`}
         </p>
         <p className="mt-2 text-sm font-semibold text-[#273c35]">
           {isPayment
