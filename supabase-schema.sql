@@ -27,20 +27,32 @@ create policy "allow shared house insert"
   on public.house_movements
   for insert
   to authenticated
-  with check (household_id = 'aleja-alejo');
+  with check (
+    household_id = 'aleja-alejo'
+    and data ->> 'createdBy' = auth.uid()::text
+  );
 
 create policy "allow shared house update"
   on public.house_movements
   for update
   to authenticated
-  using (household_id = 'aleja-alejo')
-  with check (household_id = 'aleja-alejo');
+  using (
+    household_id = 'aleja-alejo'
+    and data ->> 'createdBy' = auth.uid()::text
+  )
+  with check (
+    household_id = 'aleja-alejo'
+    and data ->> 'createdBy' = auth.uid()::text
+  );
 
 create policy "allow shared house delete"
   on public.house_movements
   for delete
   to authenticated
-  using (household_id = 'aleja-alejo');
+  using (
+    household_id = 'aleja-alejo'
+    and data ->> 'createdBy' = auth.uid()::text
+  );
 
 create or replace function public.set_updated_at()
 returns trigger

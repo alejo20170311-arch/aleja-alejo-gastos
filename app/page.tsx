@@ -26,10 +26,15 @@ type Expense = {
   split: SplitMode;
   date: string;
   createdAt?: string;
+  createdBy?: string;
+  createdByEmail?: string;
   note: string;
   receipt?: Receipt;
 };
-type ExpenseDraft = Omit<Expense, "id" | "amount" | "receipt"> & {
+type ExpenseDraft = Omit<
+  Expense,
+  "id" | "amount" | "receipt" | "createdBy" | "createdByEmail"
+> & {
   amount: string;
   receipt?: Receipt;
 };
@@ -168,6 +173,9 @@ function normalizeExpense(value: unknown): Expense | null {
     split: isSplitMode(raw.split) ? raw.split : "shared",
     date,
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : undefined,
+    createdBy: typeof raw.createdBy === "string" ? raw.createdBy : undefined,
+    createdByEmail:
+      typeof raw.createdByEmail === "string" ? raw.createdByEmail : undefined,
     note: typeof raw.note === "string" ? raw.note : "",
     receipt: isReceipt(raw.receipt) ? raw.receipt : undefined,
   };
@@ -279,16 +287,40 @@ async function upsertRemoteExpense(expense: Expense) {
   return true;
 }
 
-async function deleteRemoteExpense(id: string) {
+async function updateRemoteExpense(expense: Expense, createdBy: string) {
   if (!supabase) return true;
 
-  const { error } = await supabase
+  const { data, error } = await supabase
+    .from("house_movements")
+    .update({
+      movement_date: expense.date,
+      data: expense,
+    })
+    .eq("id", expense.id)
+    .eq("household_id", HOUSEHOLD_ID)
+    .eq("data->>createdBy", createdBy)
+    .select("id");
+
+  if (error || !data?.length) {
+    console.warn("No se pudo actualizar en Supabase", error);
+    return false;
+  }
+
+  return true;
+}
+
+async function deleteRemoteExpense(id: string, createdBy: string) {
+  if (!supabase) return true;
+
+  const { data, error } = await supabase
     .from("house_movements")
     .delete()
     .eq("id", id)
-    .eq("household_id", HOUSEHOLD_ID);
+    .eq("household_id", HOUSEHOLD_ID)
+    .eq("data->>createdBy", createdBy)
+    .select("id");
 
-  if (error) {
+  if (error || !data?.length) {
     console.warn("No se pudo eliminar en Supabase", error);
     return false;
   }
@@ -455,6 +487,11 @@ export default function Home() {
     );
   }
 
+  function canManageExpense(expense: Expense) {
+    if (!isSupabaseConfigured) return true;
+    return Boolean(user?.id && expense.createdBy === user.id);
+  }
+
   useEffect(() => {
     if (!supabase) return;
 
@@ -619,10 +656,19 @@ export default function Home() {
     const existingExpense = editingId
       ? expenses.find((expense) => expense.id === editingId)
       : undefined;
+    if (editingId && (!existingExpense || !canManageExpense(existingExpense))) {
+      setIsModalOpen(false);
+      setEditingId(null);
+      setSyncMessage("Solo puedes editar los movimientos que registraste tu.");
+      return;
+    }
+
     const savedExpense: Expense = {
       ...draft,
       id: editingId ?? crypto.randomUUID(),
       createdAt: existingExpense?.createdAt ?? new Date().toISOString(),
+      createdBy: existingExpense?.createdBy ?? user?.id ?? "local-user",
+      createdByEmail: existingExpense?.createdByEmail ?? user?.email ?? undefined,
       description: draft.description.trim(),
       category:
         draft.type === "loan"
@@ -647,7 +693,12 @@ export default function Home() {
     setEditingId(null);
     setIsModalOpen(false);
 
-    const savedRemote = await upsertRemoteExpense(savedExpense);
+    const savedRemote = existingExpense
+      ? await updateRemoteExpense(
+          savedExpense,
+          existingExpense.createdBy ?? "local-user",
+        )
+      : await upsertRemoteExpense(savedExpense);
     pendingUpsertsRef.current.delete(savedExpense.id);
 
     if (!savedRemote) {
@@ -677,10 +728,18 @@ export default function Home() {
   async function removeExpense(id: string) {
     setSyncMessage("");
     const expenseToRemove = expenses.find((expense) => expense.id === id);
+    if (!expenseToRemove || !canManageExpense(expenseToRemove)) {
+      setSyncMessage("Solo puedes eliminar los movimientos que registraste tu.");
+      return;
+    }
+
     pendingDeletesRef.current.add(id);
     setExpenses((current) => current.filter((expense) => expense.id !== id));
 
-    const deletedRemote = await deleteRemoteExpense(id);
+    const deletedRemote = await deleteRemoteExpense(
+      id,
+      expenseToRemove.createdBy ?? "local-user",
+    );
     pendingDeletesRef.current.delete(id);
 
     if (!deletedRemote) {
@@ -714,6 +773,11 @@ export default function Home() {
   }
 
   function editExpense(expense: Expense) {
+    if (!canManageExpense(expense)) {
+      setSyncMessage("Solo puedes editar los movimientos que registraste tu.");
+      return;
+    }
+
     setDraft({
       type: expense.type ?? "expense",
       description: expense.description,
@@ -744,6 +808,8 @@ export default function Home() {
       split: from === "Alejo" ? "alejo" : "aleja",
       date: today,
       createdAt: new Date().toISOString(),
+      createdBy: user?.id ?? "local-user",
+      createdByEmail: user?.email ?? undefined,
       note: `Pago para quedar a paces con ${to}.`,
     };
 
@@ -823,6 +889,8 @@ export default function Home() {
     await supabase?.auth.signOut();
     setHasLoaded(false);
     setExpenses([]);
+    setEditingId(null);
+    setIsModalOpen(false);
     setSessionMenuOpen(false);
     setPasswordPanelOpen(false);
   }
@@ -847,11 +915,17 @@ export default function Home() {
   }
 
   async function clearAll() {
-    if (expenses.length === 0) return;
-    if (window.confirm("Borrar todos los gastos registrados?")) {
+    const ownExpenses = expenses.filter(canManageExpense);
+    if (ownExpenses.length === 0) {
+      setSyncMessage("No tienes movimientos propios para eliminar.");
+      return;
+    }
+    if (window.confirm("Borrar todos los movimientos que registraste tu?")) {
       if (supabase) {
         const results = await Promise.all(
-          expenses.map((expense) => deleteRemoteExpense(expense.id)),
+          ownExpenses.map((expense) =>
+            deleteRemoteExpense(expense.id, expense.createdBy ?? "local-user"),
+          ),
         );
 
         if (results.some((deleted) => !deleted)) {
@@ -861,7 +935,10 @@ export default function Home() {
           return;
         }
       }
-      setExpenses([]);
+      const ownIds = new Set(ownExpenses.map((expense) => expense.id));
+      setExpenses((current) =>
+        current.filter((expense) => !ownIds.has(expense.id)),
+      );
     }
   }
 
@@ -997,6 +1074,7 @@ export default function Home() {
                 ) : (
                   newestExpenses.slice(0, 3).map((expense) => (
                     <ExpenseRow
+                      canManage={canManageExpense(expense)}
                       expense={expense}
                       key={expense.id}
                       onEdit={editExpense}
@@ -1173,7 +1251,7 @@ export default function Home() {
                   Exportar Excel
                 </button>
                 <button className="small-action" type="button" onClick={clearAll}>
-                  Limpiar datos
+                  Eliminar mis movimientos
                 </button>
               </div>
             </section>
@@ -1183,6 +1261,7 @@ export default function Home() {
               ) : (
                 filteredExpenses.map((expense) => (
                   <ExpenseRow
+                    canManage={canManageExpense(expense)}
                     expense={expense}
                     key={expense.id}
                     onEdit={editExpense}
@@ -1533,11 +1612,13 @@ function ExpenseModal({
 }
 
 function ExpenseRow({
+  canManage,
   expense,
   onEdit,
   onRemove,
   onViewReceipt,
 }: {
+  canManage: boolean;
   expense: Expense;
   onEdit: (expense: Expense) => void;
   onRemove: (id: string) => void;
@@ -1568,6 +1649,13 @@ function ExpenseRow({
                 expense.split,
               )}`}
         </p>
+        <p className="mt-1 text-xs text-[#756f66]">
+          {expense.createdBy
+            ? canManage
+              ? "Registrado por ti"
+              : `Registrado por ${expense.createdByEmail ?? "la otra cuenta"}`
+            : "Movimiento anterior sin propietario asignado"}
+        </p>
         <p className="mt-2 text-sm font-semibold text-[#273c35]">
           {isPayment
             ? "Pago registrado para quedar a paces"
@@ -1590,14 +1678,16 @@ function ExpenseRow({
       </div>
       <div className="flex items-center justify-between gap-3 md:flex-col md:items-end">
         <strong className="text-lg">{currency.format(expense.amount)}</strong>
-        <div className="row-actions">
-          <button type="button" onClick={() => onEdit(expense)}>
-            Editar
-          </button>
-          <button type="button" onClick={() => onRemove(expense.id)}>
-            Eliminar
-          </button>
-        </div>
+        {canManage ? (
+          <div className="row-actions">
+            <button type="button" onClick={() => onEdit(expense)}>
+              Editar
+            </button>
+            <button type="button" onClick={() => onRemove(expense.id)}>
+              Eliminar
+            </button>
+          </div>
+        ) : null}
       </div>
     </article>
   );
