@@ -830,6 +830,16 @@ export default function Home() {
 
   const totals = useMemo(() => summarizeExpenses(expenses), [expenses]);
 
+  const currentMonthTotals = useMemo(
+    () =>
+      summarizeExpenses(
+        expenses.filter(
+          (expense) => expenseMonth(expense) === today.slice(0, 7),
+        ),
+      ),
+    [expenses],
+  );
+
   const analysisExpenses = useMemo(
     () => expenses.filter((expense) => expenseMonth(expense) === analysisMonth),
     [analysisMonth, expenses],
@@ -1318,12 +1328,21 @@ export default function Home() {
               ) : null}
             </div>
             <div className="quick-grid">
-              <Metric label="Total" value={currency.format(totals.total)} />
-              <Metric label="Compartidos" value={currency.format(totals.sharedTotal)} />
-              <Metric label="Prestamos" value={currency.format(totals.loanTotal)} />
               <Metric
-                label="Top categoria"
-                value={totals.topCategory?.category ?? "Sin datos"}
+                label="Total del mes"
+                value={currency.format(currentMonthTotals.total)}
+              />
+              <Metric
+                label="Compartidos del mes"
+                value={currency.format(currentMonthTotals.sharedTotal)}
+              />
+              <Metric
+                label="Prestamos del mes"
+                value={currency.format(currentMonthTotals.loanTotal)}
+              />
+              <Metric
+                label="Top categoria del mes"
+                value={currentMonthTotals.topCategory?.category ?? "Sin datos"}
               />
             </div>
             <section className="rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm">
