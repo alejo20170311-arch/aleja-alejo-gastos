@@ -44,7 +44,7 @@ type ExpenseDraft = Omit<
 const STORAGE_KEY = "casa-aleja-alejo-expenses";
 const SYNC_STORAGE_KEY = "casa-aleja-alejo-pending-sync";
 const HOUSEHOLD_ID = "aleja-alejo";
-const REMOTE_SYNC_INTERVAL_MS = 15000;
+const REMOTE_SYNC_INTERVAL_MS = 3000;
 const RECEIPT_MAX_SIZE = 1400;
 const RECEIPT_QUALITY = 0.72;
 const people: Person[] = ["Alejo", "Aleja"];
@@ -340,6 +340,23 @@ async function loadRemoteExpenses() {
     .sort(sortNewestFirst);
 }
 
+async function loadRemoteFingerprint() {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from("house_movements")
+    .select("id, updated_at")
+    .eq("household_id", HOUSEHOLD_ID)
+    .order("id", { ascending: true });
+
+  if (error) {
+    console.warn("No se pudo comprobar si hay movimientos nuevos", error);
+    return null;
+  }
+
+  return JSON.stringify(data ?? []);
+}
+
 async function upsertRemoteExpense(expense: Expense) {
   if (!supabase) return true;
 
@@ -580,6 +597,7 @@ export default function Home() {
   const pendingUpsertsRef = useRef(new Map<string, Expense>());
   const pendingDeletesRef = useRef(new Map<string, Expense>());
   const refreshSequenceRef = useRef(0);
+  const remoteFingerprintRef = useRef<string | null>(null);
   const accountPerson = isPerson(user?.user_metadata?.person)
     ? user.user_metadata.person
     : undefined;
@@ -763,8 +781,26 @@ export default function Home() {
       }
     }
 
+    async function checkForRemoteChanges() {
+      const fingerprint = await loadRemoteFingerprint();
+      if (!isMounted || fingerprint === null) return;
+
+      const hasPendingChanges =
+        pendingUpsertsRef.current.size > 0 ||
+        pendingDeletesRef.current.size > 0;
+      if (
+        fingerprint === remoteFingerprintRef.current &&
+        !hasPendingChanges
+      ) {
+        return;
+      }
+
+      remoteFingerprintRef.current = fingerprint;
+      await refreshFromRemote();
+    }
+
     const intervalId = window.setInterval(
-      refreshFromRemote,
+      checkForRemoteChanges,
       REMOTE_SYNC_INTERVAL_MS,
     );
     window.addEventListener("focus", refreshFromRemote);
