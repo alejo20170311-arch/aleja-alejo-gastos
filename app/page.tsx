@@ -3,6 +3,7 @@
 import {
   ChangeEvent,
   FormEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -26,6 +27,7 @@ type Expense = {
   split: SplitMode;
   date: string;
   createdAt?: string;
+  updatedAt?: string;
   createdBy?: string;
   createdByEmail?: string;
   note: string;
@@ -40,8 +42,9 @@ type ExpenseDraft = Omit<
 };
 
 const STORAGE_KEY = "casa-aleja-alejo-expenses";
+const SYNC_STORAGE_KEY = "casa-aleja-alejo-pending-sync";
 const HOUSEHOLD_ID = "aleja-alejo";
-const REMOTE_SYNC_INTERVAL_MS = 30000;
+const REMOTE_SYNC_INTERVAL_MS = 15000;
 const RECEIPT_MAX_SIZE = 1400;
 const RECEIPT_QUALITY = 0.72;
 const people: Person[] = ["Alejo", "Aleja"];
@@ -173,6 +176,7 @@ function normalizeExpense(value: unknown): Expense | null {
     split: isSplitMode(raw.split) ? raw.split : "shared",
     date,
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : undefined,
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : undefined,
     createdBy: typeof raw.createdBy === "string" ? raw.createdBy : undefined,
     createdByEmail:
       typeof raw.createdByEmail === "string" ? raw.createdByEmail : undefined,
@@ -210,6 +214,73 @@ function saveLocalExpenses(expenses: Expense[]) {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(lightExpenses));
   } catch (error) {
     console.warn("No se pudo guardar el cache liviano de movimientos", error);
+  }
+}
+
+type PendingSync = {
+  upserts: Expense[];
+  deletes: Expense[];
+};
+
+function getPendingSync(userId: string): PendingSync {
+  if (typeof window === "undefined") return { upserts: [], deletes: [] };
+
+  try {
+    const stored = window.localStorage.getItem(`${SYNC_STORAGE_KEY}-${userId}`);
+    if (!stored) return { upserts: [], deletes: [] };
+    const parsed = JSON.parse(stored) as Partial<PendingSync>;
+    const normalizeList = (items: unknown) =>
+      Array.isArray(items)
+        ? items
+            .map((expense) => normalizeExpense(expense))
+            .filter((expense): expense is Expense => Boolean(expense))
+        : [];
+
+    return {
+      upserts: normalizeList(parsed.upserts),
+      deletes: normalizeList(parsed.deletes),
+    };
+  } catch {
+    return { upserts: [], deletes: [] };
+  }
+}
+
+function savePendingSync(
+  userId: string,
+  upserts: Map<string, Expense>,
+  deletes: Map<string, Expense>,
+) {
+  if (typeof window === "undefined") return;
+
+  try {
+    const pending: PendingSync = {
+      upserts: Array.from(upserts.values()),
+      deletes: Array.from(deletes.values()),
+    };
+    window.localStorage.setItem(
+      `${SYNC_STORAGE_KEY}-${userId}`,
+      JSON.stringify(pending),
+    );
+  } catch (error) {
+    console.warn("No se pudo guardar la cola de sincronizacion", error);
+    try {
+      const lightPending: PendingSync = {
+        upserts: Array.from(upserts.values()).map((expense) => ({
+          ...expense,
+          receipt: undefined,
+        })),
+        deletes: Array.from(deletes.values()).map((expense) => ({
+          ...expense,
+          receipt: undefined,
+        })),
+      };
+      window.localStorage.setItem(
+        `${SYNC_STORAGE_KEY}-${userId}`,
+        JSON.stringify(lightPending),
+      );
+    } catch (fallbackError) {
+      console.warn("No se pudo guardar la cola liviana", fallbackError);
+    }
   }
 }
 
@@ -503,13 +574,49 @@ export default function Home() {
   const [syncMessage, setSyncMessage] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
   const [viewingReceipt, setViewingReceipt] = useState<Receipt | null>(null);
+  const [pendingUpsertIds, setPendingUpsertIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const pendingUpsertsRef = useRef(new Map<string, Expense>());
-  const pendingDeletesRef = useRef(new Set<string>());
+  const pendingDeletesRef = useRef(new Map<string, Expense>());
+  const refreshSequenceRef = useRef(0);
   const accountPerson = isPerson(user?.user_metadata?.person)
     ? user.user_metadata.person
     : undefined;
 
-  function mergeRemoteWithPending(remoteExpenses: Expense[]) {
+  const persistPendingSync = useCallback(() => {
+    setPendingUpsertIds(new Set(pendingUpsertsRef.current.keys()));
+    if (!user?.id) return;
+    savePendingSync(
+      user.id,
+      pendingUpsertsRef.current,
+      pendingDeletesRef.current,
+    );
+  }, [user]);
+
+  const mergeRemoteWithPending = useCallback((remoteExpenses: Expense[]) => {
+    const remoteById = new Map(
+      remoteExpenses.map((expense) => [expense.id, expense] as const),
+    );
+
+    for (const [id, pending] of pendingUpsertsRef.current) {
+      const remote = remoteById.get(id);
+      if (
+        remote &&
+        (pending.updatedAt
+          ? remote.updatedAt === pending.updatedAt
+          : remote.createdAt === pending.createdAt)
+      ) {
+        pendingUpsertsRef.current.delete(id);
+      }
+    }
+
+    for (const id of pendingDeletesRef.current.keys()) {
+      if (!remoteById.has(id)) pendingDeletesRef.current.delete(id);
+    }
+
+    persistPendingSync();
+
     const withoutPendingDeletes = remoteExpenses.filter(
       (expense) => !pendingDeletesRef.current.has(expense.id),
     );
@@ -518,7 +625,21 @@ export default function Home() {
       Array.from(pendingUpsertsRef.current.values()),
       withoutPendingDeletes,
     );
-  }
+  }, [persistPendingSync]);
+
+  const flushPendingChanges = useCallback(async () => {
+    if (!user) return;
+
+    const upserts = Array.from(pendingUpsertsRef.current.values());
+    const deletes = Array.from(pendingDeletesRef.current.values());
+
+    await Promise.all([
+      ...upserts.map((expense) => upsertRemoteExpense(expense)),
+      ...deletes.map((expense) =>
+        deleteRemoteExpense(expense, user.id, accountPerson),
+      ),
+    ]);
+  }, [accountPerson, user]);
 
   function canManageExpense(expense: Expense) {
     if (!isSupabaseConfigured) return true;
@@ -566,6 +687,7 @@ export default function Home() {
     if (!authReady) return;
 
     async function loadExpenses() {
+      const requestId = ++refreshSequenceRef.current;
       if (isSupabaseConfigured && !user) {
         setExpenses(getStoredExpenses());
         setHasLoaded(false);
@@ -573,34 +695,41 @@ export default function Home() {
       }
 
       const localExpenses = getStoredExpenses();
-      setExpenses(localExpenses);
+      if (user?.id) {
+        const pending = getPendingSync(user.id);
+        pendingUpsertsRef.current = new Map(
+          pending.upserts.map((expense) => [expense.id, expense]),
+        );
+        pendingDeletesRef.current = new Map(
+          pending.deletes.map((expense) => [expense.id, expense]),
+        );
+        setPendingUpsertIds(new Set(pendingUpsertsRef.current.keys()));
+      }
+
+      const localWithPending = mergeExpenses(
+        Array.from(pendingUpsertsRef.current.values()),
+        localExpenses.filter(
+          (expense) => !pendingDeletesRef.current.has(expense.id),
+        ),
+      );
+      setExpenses(localWithPending);
       setHasLoaded(true);
+
+      await flushPendingChanges();
 
       const remoteExpenses = isSupabaseConfigured
         ? await loadRemoteExpenses()
         : null;
 
-      if (
-        isSupabaseConfigured &&
-        remoteExpenses &&
-        remoteExpenses.length === 0 &&
-        localExpenses.length > 0
-      ) {
-        await Promise.all(localExpenses.map((expense) => upsertRemoteExpense(expense)));
-      }
-
-      if (remoteExpenses) {
-        const nextExpenses =
-          remoteExpenses.length > 0
-            ? mergeRemoteWithPending(remoteExpenses)
-            : mergeRemoteWithPending(localExpenses);
+      if (requestId === refreshSequenceRef.current && remoteExpenses) {
+        const nextExpenses = mergeRemoteWithPending(remoteExpenses);
         setExpenses(nextExpenses);
         saveLocalExpenses(nextExpenses);
       }
     }
 
     void loadExpenses();
-  }, [authReady, user]);
+  }, [authReady, flushPendingChanges, mergeRemoteWithPending, user]);
 
   useEffect(() => {
     if (hasLoaded) saveLocalExpenses(expenses);
@@ -612,8 +741,16 @@ export default function Home() {
     let isMounted = true;
 
     async function refreshFromRemote() {
+      const requestId = ++refreshSequenceRef.current;
+      await flushPendingChanges();
       const remoteExpenses = await loadRemoteExpenses();
-      if (!isMounted || !remoteExpenses) return;
+      if (
+        !isMounted ||
+        requestId !== refreshSequenceRef.current ||
+        !remoteExpenses
+      ) {
+        return;
+      }
 
       const nextExpenses = mergeRemoteWithPending(remoteExpenses);
       setExpenses(nextExpenses);
@@ -632,14 +769,28 @@ export default function Home() {
     );
     window.addEventListener("focus", refreshFromRemote);
     document.addEventListener("visibilitychange", refreshWhenVisible);
+    const channel = supabase
+      .channel(`house-movements-${user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "house_movements",
+          filter: `household_id=eq.${HOUSEHOLD_ID}`,
+        },
+        () => void refreshFromRemote(),
+      )
+      .subscribe();
 
     return () => {
       isMounted = false;
       window.clearInterval(intervalId);
       window.removeEventListener("focus", refreshFromRemote);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
+      void supabase.removeChannel(channel);
     };
-  }, [authReady, user]);
+  }, [authReady, flushPendingChanges, mergeRemoteWithPending, user]);
 
   const totals = useMemo(() => summarizeExpenses(expenses), [expenses]);
 
@@ -719,6 +870,7 @@ export default function Home() {
       ...draft,
       id: editingId ?? crypto.randomUUID(),
       createdAt: existingExpense?.createdAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       createdBy: existingExpense?.createdBy ?? user?.id ?? "local-user",
       createdByEmail: existingExpense?.createdByEmail ?? user?.email ?? undefined,
       description: draft.description.trim(),
@@ -734,6 +886,8 @@ export default function Home() {
     };
 
     pendingUpsertsRef.current.set(savedExpense.id, savedExpense);
+    pendingDeletesRef.current.delete(savedExpense.id);
+    persistPendingSync();
     setExpenses((current) =>
       editingId
         ? current.map((expense) =>
@@ -753,20 +907,10 @@ export default function Home() {
           accountPerson,
         )
       : await upsertRemoteExpense(savedExpense);
-    pendingUpsertsRef.current.delete(savedExpense.id);
 
     if (!savedRemote) {
-      setExpenses((current) =>
-        editingId
-          ? current.map((expense) =>
-              expense.id === editingId && existingExpense
-                ? existingExpense
-                : expense,
-            )
-          : current.filter((expense) => expense.id !== savedExpense.id),
-      );
       setSyncMessage(
-        "No se pudo guardar en la nube. Revisa internet y vuelve a intentarlo.",
+        "El movimiento quedo guardado en este celular y se sincronizara automaticamente cuando haya conexion.",
       );
       return;
     }
@@ -787,7 +931,9 @@ export default function Home() {
       return;
     }
 
-    pendingDeletesRef.current.add(id);
+    pendingUpsertsRef.current.delete(id);
+    pendingDeletesRef.current.set(id, expenseToRemove);
+    persistPendingSync();
     setExpenses((current) => current.filter((expense) => expense.id !== id));
 
     const deletedRemote = await deleteRemoteExpense(
@@ -795,14 +941,9 @@ export default function Home() {
       user?.id ?? "local-user",
       accountPerson,
     );
-    pendingDeletesRef.current.delete(id);
-
     if (!deletedRemote) {
-      if (expenseToRemove) {
-        setExpenses((current) => mergeExpenses([expenseToRemove], current));
-      }
       setSyncMessage(
-        "No se pudo eliminar en la nube. Revisa internet y vuelve a intentarlo.",
+        "La eliminacion quedo pendiente y se completara automaticamente cuando haya conexion.",
       );
       return;
     }
@@ -863,23 +1004,21 @@ export default function Home() {
       split: from === "Alejo" ? "alejo" : "aleja",
       date: today,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       createdBy: user?.id ?? "local-user",
       createdByEmail: user?.email ?? undefined,
       note: `Pago para quedar a paces con ${to}.`,
     };
 
     pendingUpsertsRef.current.set(payment.id, payment);
+    persistPendingSync();
     setExpenses((current) => [payment, ...current]);
 
     const savedRemote = await upsertRemoteExpense(payment);
-    pendingUpsertsRef.current.delete(payment.id);
 
     if (!savedRemote) {
-      setExpenses((current) =>
-        current.filter((expense) => expense.id !== payment.id),
-      );
       setSyncMessage(
-        "No se pudo guardar el pago en la nube. Revisa internet y vuelve a intentarlo.",
+        "El pago quedo guardado en este celular y se sincronizara automaticamente cuando haya conexion.",
       );
       return;
     }
@@ -976,28 +1115,23 @@ export default function Home() {
       return;
     }
     if (window.confirm("Borrar todos los movimientos que registraste tu?")) {
-      if (supabase) {
-        const results = await Promise.all(
-          ownExpenses.map((expense) =>
-            deleteRemoteExpense(
-              expense,
-              user?.id ?? "local-user",
-              accountPerson,
-            ),
-          ),
-        );
-
-        if (results.some((deleted) => !deleted)) {
-          setSyncMessage(
-            "No se pudieron borrar todos los movimientos en la nube. Revisa internet y vuelve a intentarlo.",
-          );
-          return;
-        }
+      for (const expense of ownExpenses) {
+        pendingUpsertsRef.current.delete(expense.id);
+        pendingDeletesRef.current.set(expense.id, expense);
       }
+      persistPendingSync();
       const ownIds = new Set(ownExpenses.map((expense) => expense.id));
       setExpenses((current) =>
         current.filter((expense) => !ownIds.has(expense.id)),
       );
+
+      await flushPendingChanges();
+      const remoteExpenses = await loadRemoteExpenses();
+      if (remoteExpenses) {
+        const nextExpenses = mergeRemoteWithPending(remoteExpenses);
+        setExpenses(nextExpenses);
+        saveLocalExpenses(nextExpenses);
+      }
     }
   }
 
@@ -1175,6 +1309,7 @@ export default function Home() {
                     <ExpenseRow
                       canManage={canManageExpense(expense)}
                       expense={expense}
+                      isPending={pendingUpsertIds.has(expense.id)}
                       key={expense.id}
                       onEdit={editExpense}
                       onRemove={removeExpense}
@@ -1362,6 +1497,7 @@ export default function Home() {
                   <ExpenseRow
                     canManage={canManageExpense(expense)}
                     expense={expense}
+                    isPending={pendingUpsertIds.has(expense.id)}
                     key={expense.id}
                     onEdit={editExpense}
                     onRemove={removeExpense}
@@ -1713,12 +1849,14 @@ function ExpenseModal({
 function ExpenseRow({
   canManage,
   expense,
+  isPending,
   onEdit,
   onRemove,
   onViewReceipt,
 }: {
   canManage: boolean;
   expense: Expense;
+  isPending: boolean;
   onEdit: (expense: Expense) => void;
   onRemove: (id: string) => void;
   onViewReceipt: (receipt: Receipt) => void;
@@ -1734,6 +1872,7 @@ function ExpenseRow({
           <h3 className="font-bold">{expense.description}</h3>
           <span>{isLoan ? "Prestamo" : isPayment ? "Pago" : expense.category}</span>
           {expense.receipt ? <span>Factura</span> : null}
+          {isPending ? <span>Pendiente de sincronizar</span> : null}
         </div>
         <p className="mt-1 text-sm text-[#615b52]">
           {isPayment
