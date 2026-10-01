@@ -642,6 +642,8 @@ export default function Home() {
   );
   const pendingUpsertsRef = useRef(new Map<string, Expense>());
   const pendingDeletesRef = useRef(new Map<string, Expense>());
+  const acceptedUpsertsRef = useRef(new Map<string, Expense>());
+  const acceptedDeletesRef = useRef(new Set<string>());
   const refreshSequenceRef = useRef(0);
   const remoteFingerprintRef = useRef<string | null>(null);
   const accountPerson = isPerson(user?.user_metadata?.person)
@@ -675,8 +677,23 @@ export default function Home() {
       }
     }
 
+    for (const [id, accepted] of acceptedUpsertsRef.current) {
+      const remote = remoteById.get(id);
+      if (
+        remote &&
+        (accepted.updatedAt
+          ? remote.updatedAt === accepted.updatedAt
+          : remote.createdAt === accepted.createdAt)
+      ) {
+        acceptedUpsertsRef.current.delete(id);
+      }
+    }
+
     for (const id of pendingDeletesRef.current.keys()) {
       if (!remoteById.has(id)) pendingDeletesRef.current.delete(id);
+    }
+    for (const id of acceptedDeletesRef.current) {
+      if (!remoteById.has(id)) acceptedDeletesRef.current.delete(id);
     }
 
     persistPendingSync();
@@ -690,14 +707,37 @@ export default function Home() {
     }
 
     const withoutPendingDeletes = remoteExpenses.filter(
-      (expense) => !pendingDeletesRef.current.has(expense.id),
+      (expense) =>
+        !pendingDeletesRef.current.has(expense.id) &&
+        !acceptedDeletesRef.current.has(expense.id),
     );
 
     return mergeExpenses(
-      Array.from(pendingUpsertsRef.current.values()),
+      [
+        ...pendingUpsertsRef.current.values(),
+        ...acceptedUpsertsRef.current.values(),
+      ],
       withoutPendingDeletes,
     );
   }, [persistPendingSync]);
+
+  const markUpsertAccepted = useCallback(
+    (expense: Expense) => {
+      pendingUpsertsRef.current.delete(expense.id);
+      acceptedUpsertsRef.current.set(expense.id, expense);
+      persistPendingSync();
+    },
+    [persistPendingSync],
+  );
+
+  const markDeleteAccepted = useCallback(
+    (expense: Expense) => {
+      pendingDeletesRef.current.delete(expense.id);
+      acceptedDeletesRef.current.add(expense.id);
+      persistPendingSync();
+    },
+    [persistPendingSync],
+  );
 
   const flushPendingChanges = useCallback(async () => {
     if (!user) return;
@@ -705,19 +745,35 @@ export default function Home() {
     const upserts = Array.from(pendingUpsertsRef.current.values());
     const deletes = Array.from(pendingDeletesRef.current.values());
 
-    const results = await Promise.all([
-      ...upserts.map((expense) => upsertRemoteExpense(expense)),
-      ...deletes.map((expense) =>
-        deleteRemoteExpense(expense, user.id, accountPerson),
-      ),
-    ]);
-    const failed = results.find((result) => !result.ok);
+    const upsertResults = await Promise.all(
+      upserts.map(async (expense) => ({
+        expense,
+        result: await upsertRemoteExpense(expense),
+      })),
+    );
+    const deleteResults = await Promise.all(
+      deletes.map(async (expense) => ({
+        expense,
+        result: await deleteRemoteExpense(expense, user.id, accountPerson),
+      })),
+    );
+
+    for (const { expense, result } of upsertResults) {
+      if (result.ok) markUpsertAccepted(expense);
+    }
+    for (const { expense, result } of deleteResults) {
+      if (result.ok) markDeleteAccepted(expense);
+    }
+
+    const failed = [...upsertResults, ...deleteResults].find(
+      ({ result }) => !result.ok,
+    )?.result;
     if (failed) {
       setSyncMessage(
         `Hay cambios pendientes. Supabase respondio: ${failed.error ?? "error desconocido"}`,
       );
     }
-  }, [accountPerson, user]);
+  }, [accountPerson, markDeleteAccepted, markUpsertAccepted, user]);
 
   function canManageExpense(expense: Expense) {
     if (!isSupabaseConfigured) return true;
@@ -1020,6 +1076,7 @@ export default function Home() {
       );
       return;
     }
+    markUpsertAccepted(savedExpense);
 
     const remoteExpenses = await loadRemoteExpenses();
     if (remoteExpenses) {
@@ -1053,6 +1110,7 @@ export default function Home() {
       );
       return;
     }
+    markDeleteAccepted(expenseToRemove);
 
     const remoteExpenses = await loadRemoteExpenses();
     if (remoteExpenses) {
@@ -1128,6 +1186,7 @@ export default function Home() {
       );
       return;
     }
+    markUpsertAccepted(payment);
 
     const remoteExpenses = await loadRemoteExpenses();
     if (remoteExpenses) {
@@ -1189,6 +1248,11 @@ export default function Home() {
     await supabase?.auth.signOut();
     setHasLoaded(false);
     setExpenses([]);
+    pendingUpsertsRef.current.clear();
+    pendingDeletesRef.current.clear();
+    acceptedUpsertsRef.current.clear();
+    acceptedDeletesRef.current.clear();
+    setPendingUpsertIds(new Set());
     setEditingId(null);
     setIsModalOpen(false);
     setSessionMenuOpen(false);
