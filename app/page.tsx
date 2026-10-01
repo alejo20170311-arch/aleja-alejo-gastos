@@ -1734,6 +1734,10 @@ function AuthScreen() {
   const [message, setMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  function isNetworkError(errorMessage: string) {
+    return /load failed|failed to fetch|network|fetch/i.test(errorMessage);
+  }
+
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setMessage("");
@@ -1745,12 +1749,29 @@ function AuthScreen() {
       return;
     }
 
-    const result = await supabase.auth.signInWithPassword({ email, password });
+    let result = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+
+    for (let attempt = 2; attempt <= 3 && result.error; attempt += 1) {
+      if (!isNetworkError(result.error.message)) break;
+      setMessage(`Reconectando con Supabase (${attempt}/3)...`);
+      await new Promise((resolve) => window.setTimeout(resolve, attempt * 700));
+      result = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+    }
 
     setIsSubmitting(false);
 
     if (result.error) {
-      setMessage(result.error.message);
+      setMessage(
+        isNetworkError(result.error.message)
+          ? "El celular no pudo conectarse con Supabase. Prueba cambiar entre wifi y datos moviles, y desactiva temporalmente VPN o bloqueadores de contenido."
+          : result.error.message,
+      );
       return;
     }
 
