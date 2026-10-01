@@ -17,6 +17,7 @@ type MovementType = "expense" | "loan" | "payment";
 type ActiveTab = "home" | "accounts" | "analysis" | "movements";
 type SplitMode = "shared" | "alejo" | "aleja";
 type Receipt = { name: string; dataUrl: string };
+type RemoteWriteResult = { ok: boolean; error?: string };
 type Expense = {
   id: string;
   type?: MovementType;
@@ -357,8 +358,39 @@ async function loadRemoteFingerprint() {
   return JSON.stringify(data ?? []);
 }
 
-async function upsertRemoteExpense(expense: Expense) {
-  if (!supabase) return true;
+async function ensureActiveSession(): Promise<RemoteWriteResult> {
+  if (!supabase) return { ok: true };
+
+  const { data, error } = await supabase.auth.getSession();
+  if (error || !data.session) {
+    return {
+      ok: false,
+      error: error?.message ?? "La sesion vencio. Cierra sesion e ingresa de nuevo.",
+    };
+  }
+
+  const expiresAt = (data.session.expires_at ?? 0) * 1000;
+  if (expiresAt > Date.now() + 60000) return { ok: true };
+
+  const refreshed = await supabase.auth.refreshSession();
+  if (refreshed.error || !refreshed.data.session) {
+    return {
+      ok: false,
+      error:
+        refreshed.error?.message ??
+        "No se pudo renovar la sesion. Cierra sesion e ingresa de nuevo.",
+    };
+  }
+
+  return { ok: true };
+}
+
+async function upsertRemoteExpense(
+  expense: Expense,
+): Promise<RemoteWriteResult> {
+  if (!supabase) return { ok: true };
+  const session = await ensureActiveSession();
+  if (!session.ok) return session;
 
   const { error } = await supabase.from("house_movements").upsert({
     id: expense.id,
@@ -369,10 +401,10 @@ async function upsertRemoteExpense(expense: Expense) {
 
   if (error) {
     console.warn("No se pudo guardar en Supabase", error);
-    return false;
+    return { ok: false, error: `${error.message} (${error.code})` };
   }
 
-  return true;
+  return { ok: true };
 }
 
 async function updateRemoteExpense(
@@ -380,8 +412,10 @@ async function updateRemoteExpense(
   previousExpense: Expense,
   userId: string,
   accountPerson?: Person,
-) {
-  if (!supabase) return true;
+): Promise<RemoteWriteResult> {
+  if (!supabase) return { ok: true };
+  const session = await ensureActiveSession();
+  if (!session.ok) return session;
 
   let query = supabase
     .from("house_movements")
@@ -399,25 +433,32 @@ async function updateRemoteExpense(
       .is("data->>createdBy", null)
       .eq("data->>paidBy", accountPerson);
   } else {
-    return false;
+    return { ok: false, error: "No se pudo identificar al propietario." };
   }
 
   const { data, error } = await query.select("id");
 
   if (error || !data?.length) {
     console.warn("No se pudo actualizar en Supabase", error);
-    return false;
+    return {
+      ok: false,
+      error: error
+        ? `${error.message} (${error.code})`
+        : "Supabase no permitio actualizar este movimiento.",
+    };
   }
 
-  return true;
+  return { ok: true };
 }
 
 async function deleteRemoteExpense(
   expense: Expense,
   userId: string,
   accountPerson?: Person,
-) {
-  if (!supabase) return true;
+): Promise<RemoteWriteResult> {
+  if (!supabase) return { ok: true };
+  const session = await ensureActiveSession();
+  if (!session.ok) return session;
 
   let query = supabase
     .from("house_movements")
@@ -432,17 +473,22 @@ async function deleteRemoteExpense(
       .is("data->>createdBy", null)
       .eq("data->>paidBy", accountPerson);
   } else {
-    return false;
+    return { ok: false, error: "No se pudo identificar al propietario." };
   }
 
   const { data, error } = await query.select("id");
 
   if (error || !data?.length) {
     console.warn("No se pudo eliminar en Supabase", error);
-    return false;
+    return {
+      ok: false,
+      error: error
+        ? `${error.message} (${error.code})`
+        : "Supabase no permitio eliminar este movimiento.",
+    };
   }
 
-  return true;
+  return { ok: true };
 }
 
 function readReceipt(file: File) {
@@ -634,6 +680,14 @@ export default function Home() {
     }
 
     persistPendingSync();
+    if (
+      pendingUpsertsRef.current.size === 0 &&
+      pendingDeletesRef.current.size === 0
+    ) {
+      setSyncMessage((current) =>
+        current.includes("Supabase respondio") ? "" : current,
+      );
+    }
 
     const withoutPendingDeletes = remoteExpenses.filter(
       (expense) => !pendingDeletesRef.current.has(expense.id),
@@ -651,12 +705,18 @@ export default function Home() {
     const upserts = Array.from(pendingUpsertsRef.current.values());
     const deletes = Array.from(pendingDeletesRef.current.values());
 
-    await Promise.all([
+    const results = await Promise.all([
       ...upserts.map((expense) => upsertRemoteExpense(expense)),
       ...deletes.map((expense) =>
         deleteRemoteExpense(expense, user.id, accountPerson),
       ),
     ]);
+    const failed = results.find((result) => !result.ok);
+    if (failed) {
+      setSyncMessage(
+        `Hay cambios pendientes. Supabase respondio: ${failed.error ?? "error desconocido"}`,
+      );
+    }
   }, [accountPerson, user]);
 
   function canManageExpense(expense: Expense) {
@@ -954,9 +1014,9 @@ export default function Home() {
         )
       : await upsertRemoteExpense(savedExpense);
 
-    if (!savedRemote) {
+    if (!savedRemote.ok) {
       setSyncMessage(
-        "El movimiento quedo guardado en este celular y se sincronizara automaticamente cuando haya conexion.",
+        `El movimiento quedo guardado en este celular. Supabase respondio: ${savedRemote.error ?? "error desconocido"}`,
       );
       return;
     }
@@ -987,9 +1047,9 @@ export default function Home() {
       user?.id ?? "local-user",
       accountPerson,
     );
-    if (!deletedRemote) {
+    if (!deletedRemote.ok) {
       setSyncMessage(
-        "La eliminacion quedo pendiente y se completara automaticamente cuando haya conexion.",
+        `La eliminacion quedo pendiente. Supabase respondio: ${deletedRemote.error ?? "error desconocido"}`,
       );
       return;
     }
@@ -1062,9 +1122,9 @@ export default function Home() {
 
     const savedRemote = await upsertRemoteExpense(payment);
 
-    if (!savedRemote) {
+    if (!savedRemote.ok) {
       setSyncMessage(
-        "El pago quedo guardado en este celular y se sincronizara automaticamente cuando haya conexion.",
+        `El pago quedo guardado en este celular. Supabase respondio: ${savedRemote.error ?? "error desconocido"}`,
       );
       return;
     }
