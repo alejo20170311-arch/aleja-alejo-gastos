@@ -33,10 +33,16 @@ type Expense = {
   createdByEmail?: string;
   note: string;
   receipt?: Receipt;
+  receiptName?: string;
 };
 type ExpenseDraft = Omit<
   Expense,
-  "id" | "amount" | "receipt" | "createdBy" | "createdByEmail"
+  | "id"
+  | "amount"
+  | "receipt"
+  | "receiptName"
+  | "createdBy"
+  | "createdByEmail"
 > & {
   amount: string;
   receipt?: Receipt;
@@ -183,6 +189,8 @@ function normalizeExpense(value: unknown): Expense | null {
       typeof raw.createdByEmail === "string" ? raw.createdByEmail : undefined,
     note: typeof raw.note === "string" ? raw.note : "",
     receipt: isReceipt(raw.receipt) ? raw.receipt : undefined,
+    receiptName:
+      typeof raw.receiptName === "string" ? raw.receiptName : undefined,
   };
 }
 
@@ -320,25 +328,59 @@ function formatMovementDate(expense: Expense) {
   })}`;
 }
 
-async function loadRemoteExpenses() {
+async function loadRemoteExpenses(onError?: (message: string) => void) {
   if (!supabase) return null;
 
   const { data, error } = await supabase
     .from("house_movements")
-    .select("data")
+    .select(`
+      id,
+      type:data->>type,
+      description:data->>description,
+      amount:data->>amount,
+      category:data->>category,
+      paidBy:data->>paidBy,
+      split:data->>split,
+      date:data->>date,
+      createdAt:data->>createdAt,
+      updatedAt:data->>updatedAt,
+      createdBy:data->>createdBy,
+      createdByEmail:data->>createdByEmail,
+      note:data->>note,
+      receiptName:data->receipt->>name
+    `)
     .eq("household_id", HOUSEHOLD_ID)
     .order("movement_date", { ascending: false })
     .order("created_at", { ascending: false });
 
   if (error) {
     console.warn("No se pudieron cargar movimientos de Supabase", error);
+    onError?.(`${error.message} (${error.code})`);
     return null;
   }
 
   return (data ?? [])
-    .map((row) => normalizeExpense(row.data))
+    .map((row) => normalizeExpense(row))
     .filter((expense): expense is Expense => Boolean(expense))
     .sort(sortNewestFirst);
+}
+
+async function loadRemoteReceipt(id: string) {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from("house_movements")
+    .select("receipt:data->receipt")
+    .eq("id", id)
+    .eq("household_id", HOUSEHOLD_ID)
+    .maybeSingle();
+
+  if (error) {
+    console.warn("No se pudo cargar la factura", error);
+    return null;
+  }
+
+  return isReceipt(data?.receipt) ? data.receipt : null;
 }
 
 async function loadRemoteFingerprint() {
@@ -649,6 +691,11 @@ export default function Home() {
   const accountPerson = isPerson(user?.user_metadata?.person)
     ? user.user_metadata.person
     : undefined;
+  const reportRemoteLoadError = useCallback((message: string) => {
+    setSyncMessage(
+      `No se pudieron cargar los movimientos compartidos. Supabase respondio: ${message}`,
+    );
+  }, []);
 
   const persistPendingSync = useCallback(() => {
     setPendingUpsertIds(new Set(pendingUpsertsRef.current.keys()));
@@ -852,7 +899,7 @@ export default function Home() {
       await flushPendingChanges();
 
       const remoteExpenses = isSupabaseConfigured
-        ? await loadRemoteExpenses()
+        ? await loadRemoteExpenses(reportRemoteLoadError)
         : null;
 
       if (requestId === refreshSequenceRef.current && remoteExpenses) {
@@ -863,7 +910,13 @@ export default function Home() {
     }
 
     void loadExpenses();
-  }, [authReady, flushPendingChanges, mergeRemoteWithPending, user]);
+  }, [
+    authReady,
+    flushPendingChanges,
+    mergeRemoteWithPending,
+    reportRemoteLoadError,
+    user,
+  ]);
 
   useEffect(() => {
     if (hasLoaded) saveLocalExpenses(expenses);
@@ -877,7 +930,7 @@ export default function Home() {
     async function refreshFromRemote() {
       const requestId = ++refreshSequenceRef.current;
       await flushPendingChanges();
-      const remoteExpenses = await loadRemoteExpenses();
+      const remoteExpenses = await loadRemoteExpenses(reportRemoteLoadError);
       if (
         !isMounted ||
         requestId !== refreshSequenceRef.current ||
@@ -942,7 +995,13 @@ export default function Home() {
       document.removeEventListener("visibilitychange", refreshWhenVisible);
       void supabase.removeChannel(channel);
     };
-  }, [authReady, flushPendingChanges, mergeRemoteWithPending, user]);
+  }, [
+    authReady,
+    flushPendingChanges,
+    mergeRemoteWithPending,
+    reportRemoteLoadError,
+    user,
+  ]);
 
   const totals = useMemo(() => summarizeExpenses(expenses), [expenses]);
 
@@ -1078,7 +1137,7 @@ export default function Home() {
     }
     markUpsertAccepted(savedExpense);
 
-    const remoteExpenses = await loadRemoteExpenses();
+    const remoteExpenses = await loadRemoteExpenses(reportRemoteLoadError);
     if (remoteExpenses) {
       const nextExpenses = mergeRemoteWithPending(remoteExpenses);
       setExpenses(nextExpenses);
@@ -1112,7 +1171,7 @@ export default function Home() {
     }
     markDeleteAccepted(expenseToRemove);
 
-    const remoteExpenses = await loadRemoteExpenses();
+    const remoteExpenses = await loadRemoteExpenses(reportRemoteLoadError);
     if (remoteExpenses) {
       const nextExpenses = mergeRemoteWithPending(remoteExpenses);
       setExpenses(nextExpenses);
@@ -1132,11 +1191,15 @@ export default function Home() {
     setIsModalOpen(false);
   }
 
-  function editExpense(expense: Expense) {
+  async function editExpense(expense: Expense) {
     if (!canManageExpense(expense)) {
       setSyncMessage("Solo puedes editar los movimientos que registraste tu.");
       return;
     }
+
+    const receipt =
+      expense.receipt ??
+      (expense.receiptName ? await loadRemoteReceipt(expense.id) : undefined);
 
     setDraft({
       type: expense.type ?? "expense",
@@ -1147,10 +1210,25 @@ export default function Home() {
       split: expense.split,
       date: expense.date,
       note: expense.note,
-      receipt: expense.receipt,
+      receipt: receipt ?? undefined,
     });
     setEditingId(expense.id);
     setIsModalOpen(true);
+  }
+
+  async function viewExpenseReceipt(expense: Expense) {
+    if (expense.receipt) {
+      setViewingReceipt(expense.receipt);
+      return;
+    }
+
+    const receipt = await loadRemoteReceipt(expense.id);
+    if (!receipt) {
+      setSyncMessage("No se pudo cargar la factura. Revisa la conexion e intenta de nuevo.");
+      return;
+    }
+
+    setViewingReceipt(receipt);
   }
 
   async function registerSettlementPayment() {
@@ -1188,7 +1266,7 @@ export default function Home() {
     }
     markUpsertAccepted(payment);
 
-    const remoteExpenses = await loadRemoteExpenses();
+    const remoteExpenses = await loadRemoteExpenses(reportRemoteLoadError);
     if (remoteExpenses) {
       const nextExpenses = mergeRemoteWithPending(remoteExpenses);
       setExpenses(nextExpenses);
@@ -1296,7 +1374,7 @@ export default function Home() {
       );
 
       await flushPendingChanges();
-      const remoteExpenses = await loadRemoteExpenses();
+      const remoteExpenses = await loadRemoteExpenses(reportRemoteLoadError);
       if (remoteExpenses) {
         const nextExpenses = mergeRemoteWithPending(remoteExpenses);
         setExpenses(nextExpenses);
@@ -1492,7 +1570,7 @@ export default function Home() {
                       key={expense.id}
                       onEdit={editExpense}
                       onRemove={removeExpense}
-                      onViewReceipt={setViewingReceipt}
+                      onViewReceipt={viewExpenseReceipt}
                     />
                   ))
                 )}
@@ -1680,7 +1758,7 @@ export default function Home() {
                     key={expense.id}
                     onEdit={editExpense}
                     onRemove={removeExpense}
-                    onViewReceipt={setViewingReceipt}
+                    onViewReceipt={viewExpenseReceipt}
                   />
                 ))
               )}
@@ -2059,7 +2137,7 @@ function ExpenseRow({
   isPending: boolean;
   onEdit: (expense: Expense) => void;
   onRemove: (id: string) => void;
-  onViewReceipt: (receipt: Receipt) => void;
+  onViewReceipt: (expense: Expense) => void;
 }) {
   const debt = debtCreatedByExpense(expense);
   const isLoan = expense.type === "loan";
@@ -2071,7 +2149,7 @@ function ExpenseRow({
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="font-bold">{expense.description}</h3>
           <span>{isLoan ? "Prestamo" : isPayment ? "Pago" : expense.category}</span>
-          {expense.receipt ? <span>Factura</span> : null}
+          {expense.receipt || expense.receiptName ? <span>Factura</span> : null}
           {isPending ? <span>Pendiente de sincronizar</span> : null}
         </div>
         <p className="mt-1 text-sm text-[#615b52]">
@@ -2104,11 +2182,11 @@ function ExpenseRow({
         {expense.note ? (
           <p className="mt-2 text-sm text-[#615b52]">{expense.note}</p>
         ) : null}
-        {expense.receipt ? (
+        {expense.receipt || expense.receiptName ? (
           <button
             className="receipt-link"
             type="button"
-            onClick={() => onViewReceipt(expense.receipt!)}
+            onClick={() => onViewReceipt(expense)}
           >
             Ver factura
           </button>
