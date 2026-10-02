@@ -50,10 +50,30 @@ type ExpenseDraft = Omit<
 
 const STORAGE_KEY = "casa-aleja-alejo-expenses";
 const SYNC_STORAGE_KEY = "casa-aleja-alejo-pending-sync";
+const BATCH_MODE_STORAGE_KEY = "casa-aleja-alejo-batch-loading";
 const HOUSEHOLD_ID = "aleja-alejo";
 const REMOTE_SYNC_INTERVAL_MS = 3000;
 const RECEIPT_MAX_SIZE = 1400;
 const RECEIPT_QUALITY = 0.72;
+const REMOTE_BATCH_SIZE = 4;
+const REMOTE_BATCH_CONCURRENCY = 4;
+const LIGHT_MOVEMENT_SELECT = `
+  id,
+  type:data->>type,
+  description:data->>description,
+  amount:data->>amount,
+  category:data->>category,
+  paidBy:data->>paidBy,
+  split:data->>split,
+  date:data->>date,
+  createdAt:data->>createdAt,
+  updatedAt:data->>updatedAt,
+  createdBy:data->>createdBy,
+  createdByEmail:data->>createdByEmail,
+  note:data->>note,
+  receiptName:data->receipt->>name
+`;
+let remoteBatchMode = false;
 const people: Person[] = ["Alejo", "Aleja"];
 const tabs: { id: ActiveTab; label: string }[] = [
   { id: "home", label: "Inicio" },
@@ -330,31 +350,37 @@ function formatMovementDate(expense: Expense) {
 
 async function loadRemoteExpenses(onError?: (message: string) => void) {
   if (!supabase) return null;
+  let hasSavedBatchMode = false;
+  try {
+    hasSavedBatchMode =
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(BATCH_MODE_STORAGE_KEY) === "true";
+  } catch {
+    hasSavedBatchMode = false;
+  }
+  if (remoteBatchMode || hasSavedBatchMode) {
+    remoteBatchMode = true;
+    return loadRemoteExpensesInBatches(onError);
+  }
 
   const { data, error } = await supabase
     .from("house_movements")
-    .select(`
-      id,
-      type:data->>type,
-      description:data->>description,
-      amount:data->>amount,
-      category:data->>category,
-      paidBy:data->>paidBy,
-      split:data->>split,
-      date:data->>date,
-      createdAt:data->>createdAt,
-      updatedAt:data->>updatedAt,
-      createdBy:data->>createdBy,
-      createdByEmail:data->>createdByEmail,
-      note:data->>note,
-      receiptName:data->receipt->>name
-    `)
+    .select(LIGHT_MOVEMENT_SELECT)
     .eq("household_id", HOUSEHOLD_ID)
     .order("movement_date", { ascending: false })
     .order("created_at", { ascending: false });
 
   if (error) {
     console.warn("No se pudieron cargar movimientos de Supabase", error);
+    if (error.code === "57014") {
+      remoteBatchMode = true;
+      try {
+        window.localStorage.setItem(BATCH_MODE_STORAGE_KEY, "true");
+      } catch {
+        // The in-memory flag still avoids repeated heavy queries this session.
+      }
+      return loadRemoteExpensesInBatches(onError);
+    }
     onError?.(`${error.message} (${error.code})`);
     return null;
   }
@@ -363,6 +389,62 @@ async function loadRemoteExpenses(onError?: (message: string) => void) {
     .map((row) => normalizeExpense(row))
     .filter((expense): expense is Expense => Boolean(expense))
     .sort(sortNewestFirst);
+}
+
+async function loadRemoteExpensesInBatches(
+  onError?: (message: string) => void,
+) {
+  if (!supabase) return null;
+
+  const manifest = await supabase
+    .from("house_movements")
+    .select("id")
+    .eq("household_id", HOUSEHOLD_ID)
+    .order("movement_date", { ascending: false });
+
+  if (manifest.error) {
+    onError?.(`${manifest.error.message} (${manifest.error.code})`);
+    return null;
+  }
+
+  const ids = (manifest.data ?? []).map((row) => row.id);
+  const expenses: Expense[] = [];
+  const batches: string[][] = [];
+
+  for (let index = 0; index < ids.length; index += REMOTE_BATCH_SIZE) {
+    batches.push(ids.slice(index, index + REMOTE_BATCH_SIZE));
+  }
+
+  for (
+    let index = 0;
+    index < batches.length;
+    index += REMOTE_BATCH_CONCURRENCY
+  ) {
+    const group = batches.slice(index, index + REMOTE_BATCH_CONCURRENCY);
+    const results = await Promise.all(
+      group.map((batchIds) =>
+        supabase
+          .from("house_movements")
+          .select(LIGHT_MOVEMENT_SELECT)
+          .in("id", batchIds),
+      ),
+    );
+
+    for (const batch of results) {
+      if (batch.error) {
+        console.warn("No se pudo cargar un lote de movimientos", batch.error);
+        onError?.(`${batch.error.message} (${batch.error.code})`);
+        return null;
+      }
+
+      for (const row of batch.data ?? []) {
+        const expense = normalizeExpense(row);
+        if (expense) expenses.push(expense);
+      }
+    }
+  }
+
+  return expenses.sort(sortNewestFirst);
 }
 
 async function loadRemoteReceipt(id: string) {
